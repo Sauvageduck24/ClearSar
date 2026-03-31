@@ -39,3 +39,5 @@ mAPval 50-95(e2e) = 47.8
 
 val mAP = 0. (epochs)
 leaderboard = 0.
+
+# **!** Para sacar mejores resultados hay que probar a entrenar con tta, y a poner un numero de epochs cercano para asi poder ajustar close mosaic y patience, por ejemplo, en YOLO26n, tendria que haber puesto 120 epochs y close_mosaic=20 y patience 20 o algo asi.
