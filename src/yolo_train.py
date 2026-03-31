@@ -281,10 +281,10 @@ def _build_yolo_dataset(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train YOLO/RTDETR detector for ClearSAR")
+    parser = argparse.ArgumentParser(description="Train YOLO detector for ClearSAR")
     parser.add_argument("--project-root", type=str, default=None)
     parser.add_argument("--model", type=str, default="yolo11m",
-                        help="Model variant: yolo11n/s/m/l/x, yolov8m, rtdetr-l, etc.")
+                        help="Model variant: yolo11n/s/m/l/x, yolov8m, etc.")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--image-size", type=int, default=640)
@@ -302,7 +302,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     try:
-        from ultralytics import YOLO, RTDETR
+        from ultralytics import YOLO
     except ImportError:
         raise ImportError(
             "ultralytics is required for training.\n"
@@ -332,7 +332,6 @@ def main() -> None:
 
     # Resolve model path
     model_arg = args.model
-    is_rtdetr = "rtdetr" in model_arg.lower()
 
     model_arg_path = Path(model_arg)
     if model_arg_path.suffix in (".pt", ".pth"):
@@ -347,12 +346,8 @@ def main() -> None:
         found = next((c for c in candidates if c.exists()), None)
         model_name = str(found) if found else model_arg + ".pt"
 
-    if is_rtdetr:
-        print(f"[yolo] Cargando RT-DETR: {model_name}")
-        model = RTDETR(model_name)
-    else:
-        print(f"[yolo] Cargando YOLO: {model_name}")
-        model = YOLO(model_name)
+    print(f"[yolo] Cargando YOLO: {model_name}")
+    model = YOLO(model_name)
 
     run_name = f"clearsar_{args.model.replace('.pt', '')}"
     yolo_runs_dir = project_root / "outputs" / "yolo_runs"
@@ -460,15 +455,10 @@ def main() -> None:
     if args.device is not None:
         train_kwargs["device"] = args.device
 
-    # RT-DETRv2 es NMS-free
-    if is_rtdetr and "rtdetrv2" in model_arg.lower():
-        train_kwargs["nms"] = False
-        print("[yolo] RT-DETRv2: NMS deshabilitado para training (NMS-free).")
-
     if args.resume:
         last_ckpt = yolo_runs_dir / run_name / "weights" / "last.pt"
         if last_ckpt.exists():
-            model = RTDETR(str(last_ckpt)) if is_rtdetr else YOLO(str(last_ckpt))
+            model = YOLO(str(last_ckpt))
             train_kwargs["resume"] = True
             print(f"[yolo] Resuming from {last_ckpt}")
         else:
