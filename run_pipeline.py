@@ -122,6 +122,8 @@ def parse_args() -> argparse.Namespace:
                         help="Args adicionales para src.train")
     parser.add_argument("--yolo-extra-args", type=str, default="",
                         help="Args adicionales para src.yolo_train")
+    parser.add_argument("--yolo-inference", type=str, default="",
+                        help="Args adicionales para src.yolo_inference (ej: \"--conf 0.0 --max-det 500\")")
     parser.add_argument("--infer-extra-args", type=str, default="")
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--train-profile", type=str,
@@ -575,11 +577,9 @@ def main() -> None:
                 if imgsz_val:
                     yolo_infer_cmd.extend(["--image-size", imgsz_val])
 
-                # 3. Manejar TTA correctamente (comparando como string)
-                if str(args.use_tta).lower() == "true":
-                    yolo_infer_cmd.append("--tta")
-                else:
-                    yolo_infer_cmd.append("--no-tta")
+                # 4. Añadir argumentos extra para yolo_inference si se pasaron
+                if args.yolo_inference and args.yolo_inference.strip():
+                    yolo_infer_cmd.extend(shlex.split(args.yolo_inference.strip()))
                 # --- FIN DE LA CORRECCIÓN ---
 
                 if mapping_path is not None:

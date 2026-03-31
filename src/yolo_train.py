@@ -109,13 +109,13 @@ def build_sar_augment_callback():
         device = imgs.device if hasattr(imgs, "device") else torch.device("cpu")
         imgs_np = (imgs.cpu().numpy() * 255).astype(np.uint8)
 
-        augmented = []
-        for img in imgs_np:
-            img_hwc = img.transpose(1, 2, 0)
-            result = pipeline(image=img_hwc)["image"]
-            augmented.append(result.transpose(2, 0, 1))
+        # Transponer todo el batch de una vez
+        imgs_hwc = imgs_np.transpose(0, 2, 3, 1)  # (B, H, W, C)
 
-        augmented_tensor = torch.from_numpy(np.stack(augmented).astype(np.float32) / 255.0).to(device)
+        augmented = np.stack([pipeline(image=img)["image"] for img in imgs_hwc])
+        augmented_tensor = torch.from_numpy(
+            augmented.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
+        ).to(device, non_blocking=True)  # non_blocking=True para transferencia async
 
         # Escribir de vuelta en el contenedor original si es mutable
         if batch_container is None:
