@@ -11,7 +11,61 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.config import default_config
-from src.yolo_inference import get_yolo_predictions
+# Intentar importar get_yolo_predictions desde el módulo de yolo; si no existe,
+# proporcionar una implementación local mínima que use SAHI para slicing.
+try:
+    from src.yolo_inference import get_yolo_predictions
+except Exception:
+    def get_yolo_predictions(checkpoint_path, images_dir, filename_to_image_id,
+                             conf: float = 0.001, iou: float = 0.5, imgsz: int = 640,
+                             use_tta=False):
+        import torch
+        from pathlib import Path
+        try:
+            from sahi import AutoDetectionModel
+            from sahi.predict import get_sliced_prediction
+        except ImportError:
+            raise ImportError("Por favor instala sahi: pip install sahi")
+
+        detection_model = AutoDetectionModel.from_pretrained(
+            model_type="ultralytics",
+            model_path=str(checkpoint_path),
+            confidence_threshold=conf,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+        )
+
+        images_dir = Path(images_dir)
+        if isinstance(use_tta, str):
+            use_tta = use_tta.lower() in ("true", "1", "yes")
+
+        submission_rows = []
+        for fname, img_id in filename_to_image_id.items():
+            img_path = str(images_dir / fname)
+            result = get_sliced_prediction(
+                img_path,
+                detection_model,
+                slice_height=int(imgsz),
+                slice_width=int(imgsz),
+                overlap_height_ratio=0.3,
+                overlap_width_ratio=0.3,
+                perform_standard_pred=bool(use_tta),
+                postprocess_type="NMM",
+                postprocess_match_threshold=0.5,
+            )
+
+            for obj in result.object_prediction_list:
+                b = obj.bbox
+                coco_box = [b.minx, b.miny, b.maxx - b.minx, b.maxy - b.miny]
+                if coco_box[2] <= 0.001 or coco_box[3] <= 0.001:
+                    continue
+                submission_rows.append({
+                    "image_id": int(img_id),
+                    "category_id": 1,
+                    "bbox": [float(v) for v in coco_box],
+                    "score": float(obj.score.value),
+                })
+
+        return submission_rows
 
 def _run_step(step_name: str, command: List[str], cwd: Path) -> None:
     print(f"\n[{step_name}] Ejecutando: {' '.join(shlex.quote(c) for c in command)}")
