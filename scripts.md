@@ -16,6 +16,9 @@ https://leaderboard.roboflow.com/
 # YOLO26s
 & C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 12 --num-workers 8" --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
+# YOLO26x
+run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 32 --num-workers 8" --yolo-model yolo26x --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
+
 # rtdetrv2-s
 & C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 512 --epochs 200 --batch-size 24 --num-workers 6" --use-tta False --yolo-model rtdetr-l --mapping-path catalog.v1.parquet
 
@@ -42,3 +45,4 @@ val mAP = 0.426 (epochs 170)
 leaderboard = 0.4290
 
 diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
+
