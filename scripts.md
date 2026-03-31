@@ -18,3 +18,24 @@ https://leaderboard.roboflow.com/
 
 # rtdetrv2-s
 & C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 512 --epochs 200 --batch-size 24 --num-workers 6" --use-tta False --yolo-model rtdetr-l --mapping-path catalog.v1.parquet
+
+
+# Resultados
+
+## YOLO26n
+
+COCO Dataset
+
+mAPval 50-95(e2e) = 40.1
+
+val mAP = 0.38 (110 epochs)
+leaderboard = 0.3857
+
+## YOLO26s
+
+COCO Dataset
+
+mAPval 50-95(e2e) = 47.8
+
+val mAP = 0. (epochs)
+leaderboard = 0.

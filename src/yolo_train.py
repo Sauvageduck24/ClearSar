@@ -52,20 +52,24 @@ def build_sar_augment_callback():
     ya es un tensor (B, 3, H, W) float32 normalizado [0,1] en GPU/CPU.
     """
     pipeline = A.Compose([
-        # Aplicar CLAHE solo en el canal R (VV) donde vive la firma RFI
-        A.Lambda(image=apply_sar_clahe, p=0.5),
+        # CLAHE es vital en SAR, manténlo pero quizás con clipLimit más bajo
+        A.Lambda(image=apply_sar_clahe, p=0.4), 
+        
+        # Menos agresivo con el brillo
         A.RandomBrightnessContrast(
-            brightness_limit=(-0.2, 0.2),
-            contrast_limit=(-0.3, 0.3),
-            p=0.4
+            brightness_limit=(-0.1, 0.1), 
+            contrast_limit=(-0.2, 0.2), 
+            p=0.3
         ),
-        A.RandomGamma(gamma_limit=(70, 130), p=0.3),
-        A.GaussNoise(var_limit=(5.0, 30.0), mean=0, p=0.35),
-        A.Sharpen(alpha=(0.1, 0.4), lightness=(0.8, 1.2), p=0.3),
-        A.OneOf([
-            A.Blur(blur_limit=(3, 5), p=1.0),
-            A.MedianBlur(blur_limit=(3, 5), p=1.0),
-        ], p=0.15),
+        
+        # El ruido Gaussiano es excelente para SAR (simula speckle)
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
+        
+        # ¡Importante! El Sharpen ayuda a resaltar esas rayas de 1px
+        A.Sharpen(alpha=(0.2, 0.5), p=0.4),
+        
+        # Elimina los Blurs o ponlos testimoniales
+        # A.Blur(p=0.05), 
     ])
     # Nota: sin bbox_params porque las cajas ya están gestionadas por YOLO
     # Solo tocamos los píxeles, no la geometría
@@ -409,7 +413,7 @@ def main() -> None:
         # es la clave para detectarlo.
         hsv_h=0.01,
         hsv_s=0.3,
-        hsv_v=0.5,
+        hsv_v=0.2,
 
         # ── Mosaic / copy-paste ────────────────────────────────────────────
         # mosaic=1.0: combina 4 imágenes → el modelo ve RFI en muchos

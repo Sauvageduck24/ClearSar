@@ -53,19 +53,24 @@ def build_sar_augment_callback():
     import albumentations as A
 
     pipeline = A.Compose([
-        A.Lambda(image=apply_sar_clahe, p=0.5),
+        # CLAHE es vital en SAR, manténlo pero quizás con clipLimit más bajo
+        A.Lambda(image=apply_sar_clahe, p=0.4), 
+        
+        # Menos agresivo con el brillo
         A.RandomBrightnessContrast(
-            brightness_limit=(-0.2, 0.2),
-            contrast_limit=(-0.3, 0.3),
-            p=0.4,
+            brightness_limit=(-0.1, 0.1), 
+            contrast_limit=(-0.2, 0.2), 
+            p=0.3
         ),
-        A.RandomGamma(gamma_limit=(70, 130), p=0.3),
-        A.GaussNoise(var_limit=(5.0, 30.0), mean=0, p=0.35),
-        A.Sharpen(alpha=(0.1, 0.4), lightness=(0.8, 1.2), p=0.3),
-        A.OneOf([
-            A.Blur(blur_limit=(3, 5), p=1.0),
-            A.MedianBlur(blur_limit=(3, 5), p=1.0),
-        ], p=0.15),
+        
+        # El ruido Gaussiano es excelente para SAR (simula speckle)
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
+        
+        # ¡Importante! El Sharpen ayuda a resaltar esas rayas de 1px
+        A.Sharpen(alpha=(0.2, 0.5), p=0.4),
+        
+        # Elimina los Blurs o ponlos testimoniales
+        # A.Blur(p=0.05), 
     ])
 
     def on_train_batch_start(trainer, *cb_args, **cb_kwargs):

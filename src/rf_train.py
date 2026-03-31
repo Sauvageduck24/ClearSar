@@ -43,26 +43,25 @@ def _build_albumentations_pipeline():
     """Pipeline Albumentations SAR-específico reutilizable."""
     import albumentations as A
     return A.Compose([
-        A.Lambda(image=apply_sar_clahe, p=0.5),
+        # CLAHE es vital en SAR, manténlo pero quizás con clipLimit más bajo
+        A.Lambda(image=apply_sar_clahe, p=0.4), 
+        
+        # Menos agresivo con el brillo
         A.RandomBrightnessContrast(
-            brightness_limit=(-0.2, 0.2),
-            contrast_limit=(-0.3, 0.3),
-            p=0.4,
+            brightness_limit=(-0.1, 0.1), 
+            contrast_limit=(-0.2, 0.2), 
+            p=0.3
         ),
-        A.RandomGamma(gamma_limit=(70, 130), p=0.3),
-        A.GaussNoise(var_limit=(5.0, 30.0), mean=0, p=0.35),
-        A.Sharpen(alpha=(0.1, 0.4), lightness=(0.8, 1.2), p=0.3),
-        A.OneOf([
-            A.Blur(blur_limit=(3, 5), p=1.0),
-            A.MedianBlur(blur_limit=(3, 5), p=1.0),
-        ], p=0.15),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-    ], bbox_params=A.BboxParams(
-        format="coco",
-        label_fields=["class_labels"],
-        min_visibility=0.3,
-    ))
+        
+        # El ruido Gaussiano es excelente para SAR (simula speckle)
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
+        
+        # ¡Importante! El Sharpen ayuda a resaltar esas rayas de 1px
+        A.Sharpen(alpha=(0.2, 0.5), p=0.4),
+        
+        # Elimina los Blurs o ponlos testimoniales
+        # A.Blur(p=0.05), 
+    ])
 
 
 # ---------------------------------------------------------------------------
