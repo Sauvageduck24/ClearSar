@@ -33,7 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, required=True, help="Ruta al archivo best.pt")
     parser.add_argument("--mapping-path", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--conf", type=float, default=0.0001)
+    parser.add_argument("--conf", type=float, default=0)
+    parser.add_argument("--iou", type=float, default=0.7, help="Umbral IOU para NMS")
+    parser.add_argument("--max-det", type=int, default=100, dest="max_det", help="Máximo detecciones por imagen")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     # Parámetros SAHI
     parser.add_argument("--slice-size", type=int, default=640)
@@ -86,6 +88,25 @@ def main() -> None:
         confidence_threshold=args.conf,
         device=args.device,
     )
+
+    # Aplicar valores directamente al modelo subyacente si está disponible.
+    # Esto intenta ajustar `conf`, `iou` y `max_det` en backends como ultralytics.
+    try:
+        if hasattr(detection_model, "model"):
+            try:
+                setattr(detection_model.model, "conf", args.conf)
+            except Exception:
+                pass
+            try:
+                setattr(detection_model.model, "iou", args.iou)
+            except Exception:
+                pass
+            try:
+                setattr(detection_model.model, "max_det", args.max_det)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     submission_rows: List[Dict[str, Any]] = []
 
