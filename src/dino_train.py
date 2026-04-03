@@ -41,6 +41,8 @@ from tqdm import tqdm
 import torchvision.transforms.functional as TF
 from torchvision.ops import nms
 
+from src.dataset import split_train_val_image_ids
+
 # Usamos transformers de HuggingFace para DINO
 try:
     from transformers import (
@@ -479,13 +481,12 @@ def parse_args():
 
 
 def split_ids(annotation_path: Path, val_fraction: float, seed: int):
-    with annotation_path.open() as f:
-        coco = json.load(f)
-    ids = [img["id"] for img in coco["images"]]
-    rng = random.Random(seed)
-    rng.shuffle(ids)
-    n_val = max(1, int(len(ids) * val_fraction))
-    return ids[n_val:], ids[:n_val]
+    return split_train_val_image_ids(
+        annotation_path=annotation_path,
+        val_fraction=val_fraction,
+        seed=seed,
+        stratify_by_presence=True,
+    )
 
 
 def main():

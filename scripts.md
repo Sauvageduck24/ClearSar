@@ -12,6 +12,8 @@ https://leaderboard.roboflow.com/
 --train-extra-args "--arch fasterrcnn_resnet50_fpn_v2 --image-size 640 --epochs 50 --batch-size 8 --num-workers 12 --grad-accum-steps 2 --lr 2e-4" \
 --mapping-path catalog.v1.parquet"
 
+se queda estancado entorno a 0.3 no escala bien
+
 mAP val => 
 mAP leaderboard => 
 
@@ -59,7 +61,9 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 # Retinanet
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.retinanet_train --project-root . --backbone resnet101 --epochs 5 --batch-size 2 --num-workers 8
+### resultados experimento
+
+/usr/local/bin/python -m src.retinanet_train --project-root . --backbone resnet101 --epochs 50 --batch-size 16 --num-workers 16 --tile-size 512
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.retinanet_inference --checkpoint outputs/retinanet/best.pt --backbone resnet101
 
@@ -69,11 +73,19 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.dino_inference --checkpoint outputs/dino/best_hf
 
+### resultados experimento
+
+/usr/local/bin/python -m src.dino_train --project-root . --model-name dino_r101_detr --epochs 50 --batch-size 16 --gradient-accumulation 4 --tile-size 512 --num-workers 16
+
 # Focus Det
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.focusdet_train --project-root . --epochs 80 --batch-size 1 --imgsz 640
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.focusdet_inference --checkpoint outputs/focusdet/best.pt --imgsz 640
+
+### resultados experimento
+
+/usr/local/bin/python -m src.focusdet_train --project-root . --epochs 80 --batch-size 8 --imgsz 640 --num-workers 16
 
 # ENSEMBLE
 

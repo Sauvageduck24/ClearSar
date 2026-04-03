@@ -35,6 +35,8 @@ from torchvision.ops import nms
 import torchvision.transforms.functional as TF
 from tqdm import tqdm
 
+from src.dataset import split_train_val_image_ids
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────────────────────────────────────
@@ -216,7 +218,7 @@ class TiledCOCODataset(Dataset):
             boxes_t = torch.as_tensor(boxes, dtype=torch.float32)
             keep = (boxes_t[:, 2] > boxes_t[:, 0]) & (boxes_t[:, 3] > boxes_t[:, 1])
             boxes_t = boxes_t[keep]
-            labels = torch.zeros(len(boxes_t), dtype=torch.int64)
+            labels = torch.ones(len(boxes_t), dtype=torch.int64)
         else:
             boxes_t = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros(0, dtype=torch.int64)
@@ -294,14 +296,14 @@ def build_model(backbone_name: str = "resnet50", num_classes: int = 1, pretraine
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _validate_targets_for_retinanet(targets: List[Dict], num_classes: int) -> None:
-    """Valida que labels esten en rango [0, num_classes-1] para evitar CUDA asserts opacos."""
+    """Valida que labels esten en rango [1, num_classes] para evitar targets invalidos."""
     for i, t in enumerate(targets):
         labels = t.get("labels")
         if labels is None or labels.numel() == 0:
             continue
         min_label = int(labels.min().item())
         max_label = int(labels.max().item())
-        if min_label < 0 or max_label >= num_classes:
+        if min_label < 1 or max_label > num_classes:
             raise ValueError(
                 f"Target fuera de rango en batch item {i}: labels en [{min_label}, {max_label}] "
                 f"pero num_classes={num_classes}."
@@ -473,13 +475,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def split_ids(annotation_path: Path, val_fraction: float, seed: int):
-    with annotation_path.open() as f:
-        coco = json.load(f)
-    ids = [img["id"] for img in coco["images"]]
-    rng = random.Random(seed)
-    rng.shuffle(ids)
-    n_val = max(1, int(len(ids) * val_fraction))
-    return ids[n_val:], ids[:n_val]
+    return split_train_val_image_ids(
+        annotation_path=annotation_path,
+        val_fraction=val_fraction,
+        seed=seed,
+        stratify_by_presence=True,
+    )
 
 
 def main() -> None:
