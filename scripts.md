@@ -63,7 +63,7 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 ### resultados experimento
 
-/usr/local/bin/python -m src.retinanet_train --project-root . --backbone resnet50 --epochs 80 --batch-size 32 --num-workers 16 --tile-size 512 --tiles True
+/usr/local/bin/python -m src.retinanet_train --project-root . --backbone resnet50 --epochs 80 --batch-size 32 --num-workers 16 --tile-size 512 --tiles True --lr 5e-4
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.retinanet_inference --checkpoint outputs/retinanet/best.pt --backbone resnet101
 

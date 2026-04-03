@@ -244,7 +244,7 @@ class TiledCOCODataset(Dataset):
             boxes_t = torch.as_tensor(boxes, dtype=torch.float32)
             keep = (boxes_t[:, 2] > boxes_t[:, 0]) & (boxes_t[:, 3] > boxes_t[:, 1])
             boxes_t = boxes_t[keep]
-            labels = torch.zeros(len(boxes_t), dtype=torch.int64)
+            labels = torch.ones(len(boxes_t), dtype=torch.int64)   # clase 1 = RFI
         else:
             boxes_t = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros(0, dtype=torch.int64)
@@ -286,11 +286,12 @@ def collate_eval_fn(batch):
 # MODEL
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_model(backbone_name: str = "resnet50", num_classes: int = 1, pretrained: bool = True) -> RetinaNet:
+def build_model(backbone_name: str = "resnet50", num_classes: int = 2, pretrained: bool = True) -> RetinaNet:
     """
     Construye un RetinaNet con:
       - Backbone ResNet-FPN (50 o 101)
       - Anchors custom para objetos pequeños y de aspecto extremo
+            - `num_classes` incluye background, así que para una sola clase real debe ser 2
     """
     trainable_layers = 3
     backbone = resnet_fpn_backbone(
@@ -336,12 +337,18 @@ def _validate_targets_for_retinanet(targets: List[Dict], num_classes: int) -> No
             )
 
 
+def _set_batchnorm_eval(module: nn.Module) -> None:
+    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        module.eval()
+
+
 def train_one_epoch(model, optimizer, loader, device, scaler, epoch: int) -> float:
     model.train()
     total_loss = 0.0
     num_classes = int(model.head.classification_head.num_classes)
     pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
     for imgs, targets in pbar:
+        optimizer.zero_grad(set_to_none=True)
         imgs = [img.to(device) for img in imgs]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         _validate_targets_for_retinanet(targets, num_classes=num_classes)
@@ -354,8 +361,6 @@ def train_one_epoch(model, optimizer, loader, device, scaler, epoch: int) -> flo
         with amp_ctx:
             loss_dict = model(imgs, targets)
             losses = sum(loss_dict.values())
-
-        optimizer.zero_grad()
         if scaler:
             scaler.scale(losses).backward()
             scaler.unscale_(optimizer)
@@ -377,6 +382,7 @@ def train_one_epoch(model, optimizer, loader, device, scaler, epoch: int) -> flo
 def evaluate(model, loader, device) -> float:
     """Evaluación simplificada: promedio del loss en val (modo train para calcular loss)."""
     model.train()  # RetinaNet solo devuelve loss en modo train
+    model.apply(_set_batchnorm_eval)
     total = 0.0
     for imgs, targets in tqdm(loader, desc="Val", leave=False):
         imgs = [img.to(device) for img in imgs]
@@ -488,7 +494,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=80)
     p.add_argument("--batch-size", type=int, default=4,
                    help="Tiles por batch. Con tile 512px y bs=4 cabe en ~8GB VRAM")
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--val-fraction", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=42)
@@ -526,6 +532,8 @@ def main() -> None:
 
     device = torch.device(args.device)
     print(f"[retinanet] Device: {device}")
+    if not args.tiles and args.batch_size > 8:
+        print("[retinanet] Warning: sin tiling, un batch-size > 8 puede causar OOM o entrenamientos inestables.")
 
     # Split
     train_ids, val_ids = split_ids(ann_path, args.val_fraction, args.seed)
@@ -550,7 +558,7 @@ def main() -> None:
     # Modelo
     model = build_model(
         backbone_name=args.backbone,
-        num_classes=1,
+        num_classes=2,
         pretrained=not args.no_pretrained,
     )
     model.to(device)
@@ -566,7 +574,7 @@ def main() -> None:
     backbone_params = list(model.backbone.parameters())
     head_params = [p for p in model.parameters() if not any(p is bp for bp in backbone_params)]
     optimizer = torch.optim.AdamW([
-        {"params": backbone_params, "lr": args.lr * 0.1},
+        {"params": backbone_params, "lr": args.lr * 0.2},
         {"params": head_params, "lr": args.lr},
     ], weight_decay=args.weight_decay)
 

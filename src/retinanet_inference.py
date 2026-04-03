@@ -29,7 +29,7 @@ from src.dataset import load_test_id_mapping
 from src.submission import save_submission_auto, validate_submission_schema
 
 # Importar helpers de tiling y builder desde retinanet_train
-from retinanet_train import build_model, compute_tiles, pad_to_square, TILE_SIZE, TILE_OVERLAP
+from src.retinanet_train import build_model, compute_tiles, pad_to_square, TILE_SIZE, TILE_OVERLAP
 
 SCORE_THRESH = 0.25
 NMS_IOU_FINAL = 0.4
@@ -131,7 +131,7 @@ def main() -> None:
     print(f"[retinanet_infer] Device: {device}")
 
     # Cargar modelo
-    model = build_model(backbone_name=args.backbone, num_classes=1, pretrained=False)
+    model = build_model(backbone_name=args.backbone, num_classes=2, pretrained=False)
     ckpt = torch.load(args.checkpoint, map_location=device)
     state = ckpt["model"] if "model" in ckpt else ckpt
     model.load_state_dict(state)
