@@ -48,6 +48,17 @@ NMS_IOU_THRESH = 0.4     # NMS en ensamble de tiles durante inferencia
 SCORE_THRESH = 0.05      # umbral de score mínimo en detección
 DETECTIONS_PER_IMG = 500
 
+
+def str2bool(v: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    value = str(v).strip().lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected True or False")
+
 # Anchors custom para RFI (rayas muy finas y largas)
 # sizes   → escalas absolutas en píxeles
 # ratios  → aspect ratios (ancho/alto); RFI tiene ratios muy grandes
@@ -59,8 +70,17 @@ ANCHOR_RATIOS  = ((0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0),)
 # TILING UTILS
 # ──────────────────────────────────────────────────────────────────────────────
 
-def compute_tiles(img_w: int, img_h: int, tile_size: int, overlap: int) -> List[Tuple[int, int, int, int]]:
+def compute_tiles(
+    img_w: int,
+    img_h: int,
+    tile_size: int,
+    overlap: int,
+    use_tiles: bool = True,
+) -> List[Tuple[int, int, int, int]]:
     """Devuelve lista de (x1, y1, x2, y2) para cada tile."""
+    if not use_tiles:
+        return [(0, 0, img_w, img_h)]
+
     stride = tile_size - overlap
     tiles = []
     y = 0
@@ -127,6 +147,8 @@ class TiledCOCODataset(Dataset):
         tile_size: int = TILE_SIZE,
         overlap: int = TILE_OVERLAP,
         augment: bool = True,
+        category_id: int = 1,
+        use_tiles: bool = True,
     ):
         with annotation_path.open() as f:
             coco = json.load(f)
@@ -135,10 +157,14 @@ class TiledCOCODataset(Dataset):
         self.tile_size = tile_size
         self.overlap = overlap
         self.augment = augment
+        self.category_id = int(category_id)
+        self.use_tiles = bool(use_tiles)
 
         img_meta = {img["id"]: img for img in coco["images"]}
         anns_by_img: Dict[int, List] = {}
         for ann in coco["annotations"]:
+            if int(ann.get("category_id", self.category_id)) != self.category_id:
+                continue
             anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
         ids = image_ids if image_ids else list(img_meta.keys())
@@ -158,7 +184,7 @@ class TiledCOCODataset(Dataset):
                     boxes.append([x, y, x + w, y + h])
             boxes_np = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
 
-            n_tiles = len(compute_tiles(W, H, tile_size, overlap))
+            n_tiles = len(compute_tiles(W, H, tile_size, overlap, use_tiles=self.use_tiles))
             self.image_records.append((meta, boxes_np))
             self._tile_offsets.append(self._tile_offsets[-1] + n_tiles)
 
@@ -177,7 +203,7 @@ class TiledCOCODataset(Dataset):
 
         meta, boxes_np = self.image_records[img_idx]
         W, H = meta["width"], meta["height"]
-        tiles = compute_tiles(W, H, self.tile_size, self.overlap)
+        tiles = compute_tiles(W, H, self.tile_size, self.overlap, use_tiles=self.use_tiles)
         tx1, ty1, tx2, ty2 = tiles[tile_local_idx]
 
         img_path = self.images_dir / meta["file_name"]
@@ -372,6 +398,7 @@ def evaluate_map_tiled(
     tile_size: int = TILE_SIZE,
     overlap: int = TILE_OVERLAP,
     category_id: int = 1,
+    use_tiles: bool = True,
 ) -> float:
     model.eval()
     results: List[Dict[str, Any]] = []
@@ -382,7 +409,7 @@ def evaluate_map_tiled(
         img_w, img_h = int(meta["width"]), int(meta["height"])
         img = Image.open(images_dir / meta["file_name"]).convert("RGB")
 
-        tiles = compute_tiles(img_w, img_h, tile_size, overlap)
+        tiles = compute_tiles(img_w, img_h, tile_size, overlap, use_tiles=use_tiles)
         all_boxes: List[np.ndarray] = []
         all_scores: List[np.ndarray] = []
 
@@ -467,6 +494,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--tile-size", type=int, default=TILE_SIZE)
     p.add_argument("--tile-overlap", type=int, default=TILE_OVERLAP)
+    p.add_argument("--tiles", type=str2bool, default=True,
+                   help="Usar tiling: True/False")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--resume", type=str, default=None, help="Ruta a checkpoint .pt para reanudar")
@@ -504,9 +533,11 @@ def main() -> None:
 
     # Datasets
     train_ds = TiledCOCODataset(ann_path, train_images_dir, train_ids,
-                                 tile_size=args.tile_size, overlap=args.tile_overlap, augment=True)
+                                                                 tile_size=args.tile_size, overlap=args.tile_overlap, augment=True, category_id=1,
+                                                                 use_tiles=args.tiles)
     val_ds = TiledCOCODataset(ann_path, train_images_dir, val_ids,
-                               tile_size=args.tile_size, overlap=args.tile_overlap, augment=False)
+                                                             tile_size=args.tile_size, overlap=args.tile_overlap, augment=False, category_id=1,
+                                                             use_tiles=args.tiles)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                                num_workers=args.num_workers, collate_fn=collate_fn, pin_memory=True)
@@ -564,6 +595,7 @@ def main() -> None:
             tile_size=args.tile_size,
             overlap=args.tile_overlap,
             category_id=1,
+            use_tiles=args.tiles,
         )
         scheduler.step()
 

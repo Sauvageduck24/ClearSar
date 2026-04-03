@@ -61,6 +61,17 @@ TILE_OVERLAP = 200
 MAX_BOXES_PER_IMAGE = 300  # DINO tiene un límite de queries
 NMS_IOU_THRESH = 0.4
 
+
+def str2bool(v: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    value = str(v).strip().lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected True or False")
+
 # Alias de entrenamiento compatibles con AutoModelForObjectDetection.
 # GroundingDINO no entra aqui porque requiere un pipeline de grounding con texto,
 # no el flujo de deteccion supervisada usado por este script.
@@ -79,7 +90,16 @@ DINO_MODELS = {
 # TILING (igual que retinanet_train pero con tile_size mayor)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def compute_tiles(img_w: int, img_h: int, tile_size: int, overlap: int) -> List[Tuple[int, int, int, int]]:
+def compute_tiles(
+    img_w: int,
+    img_h: int,
+    tile_size: int,
+    overlap: int,
+    use_tiles: bool = True,
+) -> List[Tuple[int, int, int, int]]:
+    if not use_tiles:
+        return [(0, 0, img_w, img_h)]
+
     stride = tile_size - overlap
     tiles = []
     y = 0
@@ -140,6 +160,8 @@ class TiledDINODataset(Dataset):
         overlap: int = TILE_OVERLAP,
         augment: bool = True,
         max_boxes: int = MAX_BOXES_PER_IMAGE,
+        category_id: int = 1,
+        use_tiles: bool = True,
     ):
         with annotation_path.open() as f:
             coco = json.load(f)
@@ -150,10 +172,14 @@ class TiledDINODataset(Dataset):
         self.overlap = overlap
         self.augment = augment
         self.max_boxes = max_boxes
+        self.category_id = int(category_id)
+        self.use_tiles = bool(use_tiles)
 
         img_meta = {img["id"]: img for img in coco["images"]}
         anns_by_img: Dict[int, List] = {}
         for ann in coco["annotations"]:
+            if int(ann.get("category_id", self.category_id)) != self.category_id:
+                continue
             anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
         ids = image_ids if image_ids else list(img_meta.keys())
@@ -170,7 +196,7 @@ class TiledDINODataset(Dataset):
                     boxes.append([x, y, x + w, y + h])
             boxes_np = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
 
-            for tile in compute_tiles(W, H, tile_size, overlap):
+            for tile in compute_tiles(W, H, tile_size, overlap, use_tiles=self.use_tiles):
                 if len(boxes_np) > 0:
                     tile_boxes, _ = clip_boxes_to_tile(boxes_np, tile)
                 else:
@@ -360,6 +386,7 @@ def evaluate_map_tiled(
     tile_size: int = TILE_SIZE,
     overlap: int = TILE_OVERLAP,
     category_id: int = 1,
+    use_tiles: bool = True,
 ):
     model.eval()
     results: List[Dict[str, Any]] = []
@@ -371,7 +398,7 @@ def evaluate_map_tiled(
         img_w, img_h = int(meta["width"]), int(meta["height"])
         img = Image.open(images_dir / meta["file_name"]).convert("RGB")
 
-        tiles = compute_tiles(img_w, img_h, tile_size, overlap)
+        tiles = compute_tiles(img_w, img_h, tile_size, overlap, use_tiles=use_tiles)
         all_boxes: List[np.ndarray] = []
         all_scores: List[np.ndarray] = []
 
@@ -471,6 +498,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--tile-size", type=int, default=TILE_SIZE)
     p.add_argument("--tile-overlap", type=int, default=TILE_OVERLAP)
+    p.add_argument("--tiles", type=str2bool, default=True,
+                   help="Usar tiling: True/False")
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--warmup-steps", type=int, default=500)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -541,9 +570,11 @@ def main():
 
     # Datasets
     train_ds = TiledDINODataset(ann_path, train_images_dir, processor,
-                                 train_ids, args.tile_size, args.tile_overlap, augment=True)
+                                                                 train_ids, args.tile_size, args.tile_overlap, augment=True, category_id=1,
+                                                                 use_tiles=args.tiles)
     val_ds = TiledDINODataset(ann_path, train_images_dir, processor,
-                               val_ids, args.tile_size, args.tile_overlap, augment=False)
+                                                             val_ids, args.tile_size, args.tile_overlap, augment=False, category_id=1,
+                                                             use_tiles=args.tiles)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                                num_workers=args.num_workers, collate_fn=collate_dino)
@@ -656,6 +687,7 @@ def main():
             tile_size=args.tile_size,
             overlap=args.tile_overlap,
             category_id=1,
+            use_tiles=args.tiles,
         )
         lr_now = optimizer.param_groups[-1]["lr"]
         print(
