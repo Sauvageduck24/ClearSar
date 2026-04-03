@@ -61,9 +61,9 @@ def str2bool(v: str) -> bool:
 
 # Anchors custom para RFI (rayas muy finas y largas)
 # sizes   → escalas absolutas en píxeles
-# ratios  → aspect ratios (ancho/alto); RFI tiene ratios muy grandes
+# ratios  → aspect ratios (ancho/alto); mantenemos solo extremos y el caso cuadrado
 ANCHOR_SIZES   = ((8,), (16,), (32,), (64,), (128,))   # por nivel FPN
-ANCHOR_RATIOS  = ((0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0),) * 5  # mismo para cada nivel
+ANCHOR_RATIOS  = ((0.05, 0.2, 1.0, 5.0, 20.0),) * 5  # mismo para cada nivel
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -286,14 +286,18 @@ def collate_eval_fn(batch):
 # MODEL
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_model(backbone_name: str = "resnet50", num_classes: int = 2, pretrained: bool = True) -> RetinaNet:
+def build_model(
+    backbone_name: str = "resnet50",
+    num_classes: int = 2,
+    pretrained: bool = True,
+    trainable_layers: int = 3,
+) -> RetinaNet:
     """
     Construye un RetinaNet con:
       - Backbone ResNet-FPN (50 o 101)
       - Anchors custom para objetos pequeños y de aspecto extremo
             - `num_classes` incluye background, así que para una sola clase real debe ser 2
     """
-    trainable_layers = 3
     backbone = resnet_fpn_backbone(
         backbone_name=backbone_name,
         weights="DEFAULT" if pretrained else None,
@@ -495,6 +499,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=4,
                    help="Tiles por batch. Con tile 512px y bs=4 cabe en ~8GB VRAM")
     p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument("--backbone-lr", type=float, default=None,
+                   help="LR independiente para el backbone. Si no se define, se usa 0.2 * --lr")
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--val-fraction", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=42)
@@ -506,6 +512,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--resume", type=str, default=None, help="Ruta a checkpoint .pt para reanudar")
     p.add_argument("--no-pretrained", action="store_true")
+    p.add_argument("--trainable-layers", type=int, default=3,
+                   help="Capas del backbone ResNet que quedan entrenables en resnet_fpn_backbone")
     return p.parse_args()
 
 
@@ -560,6 +568,7 @@ def main() -> None:
         backbone_name=args.backbone,
         num_classes=2,
         pretrained=not args.no_pretrained,
+        trainable_layers=args.trainable_layers,
     )
     model.to(device)
 
@@ -573,8 +582,9 @@ def main() -> None:
     # Optimizador con LR diferencial (backbone más bajo)
     backbone_params = list(model.backbone.parameters())
     head_params = [p for p in model.parameters() if not any(p is bp for bp in backbone_params)]
+    backbone_lr = args.backbone_lr if args.backbone_lr is not None else args.lr * 0.2
     optimizer = torch.optim.AdamW([
-        {"params": backbone_params, "lr": args.lr * 0.2},
+        {"params": backbone_params, "lr": backbone_lr},
         {"params": head_params, "lr": args.lr},
     ], weight_decay=args.weight_decay)
 
