@@ -6,6 +6,7 @@ import torch
 import torchvision
 from torch import nn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.rpn import AnchorGenerator, RPNHead
 
 from src.config import ModelConfig
 
@@ -96,6 +97,19 @@ def _load_ssl_backbone_if_available(model: nn.Module, cfg: ModelConfig) -> None:
     print(f"[ssl] Loaded {len(mapped)} backbone tensors from {ssl_path}")
 
 
+def _configure_rpn_for_small_objects(model: nn.Module) -> None:
+    # Use smaller anchors and match the RPN head to the new anchor count.
+    anchor_sizes = ((4,), (8,), (16,), (32,), (64,))
+    aspect_ratios = ((0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0),) * len(anchor_sizes)
+    anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
+
+    num_anchors = anchor_generator.num_anchors_per_location()[0]
+    in_channels = model.backbone.out_channels
+
+    model.rpn.anchor_generator = anchor_generator
+    model.rpn.head = RPNHead(in_channels, num_anchors)
+
+
 def build_model(cfg: ModelConfig, device: Optional[torch.device] = None) -> nn.Module:
     """
     Build detection model.
@@ -105,17 +119,19 @@ def build_model(cfg: ModelConfig, device: Optional[torch.device] = None) -> nn.M
     """
     if cfg.architecture == "fasterrcnn_resnet50_fpn_v2":
         model = torchvision.models.detection.fasterrcnn_resnet50_fpn_v2(
-            weights=cfg.pretrained_weights
+            weights=cfg.pretrained_weights,
         )
     elif cfg.architecture == "fasterrcnn_mobilenet_v3_large_fpn":
         model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(
-            weights=cfg.pretrained_weights
+            weights=cfg.pretrained_weights,
         )
     else:
         raise ValueError(
             "Unsupported architecture. Use 'fasterrcnn_resnet50_fpn_v2' or "
             "'fasterrcnn_mobilenet_v3_large_fpn'."
         )
+
+    _configure_rpn_for_small_objects(model)
 
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, cfg.num_classes)

@@ -18,132 +18,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
-import albumentations as A
 from src.config import default_config
 from src.dataset import split_train_val_image_ids
 from src.utils.repro import set_seed
-import torch
-import numpy as np
-import cv2
-
-
-def apply_sar_clahe(image: np.ndarray) -> np.ndarray:
-    """CLAHE selectivo en canal VV (R) del quicklook Sentinel-1.
-
-    Aplica CLAHE solo al canal R (índice 0) que contiene la firma RFI.
-    Espera `image` en formato HWC uint8.
-    """
-    result = image.copy()
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    # Solo canal R = VV donde el RFI tiene mayor firma
-    try:
-        result[:, :, 0] = clahe.apply(result[:, :, 0])
-    except Exception:
-        # En caso de que la imagen no tenga 3 canales, devolver original
-        return image
-    return result
-
-def build_sar_augment_callback():
-    """
-    Callback que inyecta augmentaciones SAR-específicas via Albumentations
-    encima de las augmentaciones geométricas de YOLO.
-    
-    Se engancha en on_train_batch_start, donde trainer.batch['img']
-    ya es un tensor (B, 3, H, W) float32 normalizado [0,1] en GPU/CPU.
-    """
-    pipeline = A.Compose([
-        # CLAHE es vital en SAR, manténlo pero quizás con clipLimit más bajo
-        A.Lambda(image=apply_sar_clahe, p=0.4), 
-        
-        # Menos agresivo con el brillo
-        A.RandomBrightnessContrast(
-            brightness_limit=(-0.1, 0.1), 
-            contrast_limit=(-0.2, 0.2), 
-            p=0.3
-        ),
-        
-        # El ruido Gaussiano es excelente para SAR (simula speckle)
-        A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
-        
-        # ¡Importante! El Sharpen ayuda a resaltar esas rayas de 1px
-        A.Sharpen(alpha=(0.2, 0.5), p=0.4),
-        
-        # Elimina los Blurs o ponlos testimoniales
-        # A.Blur(p=0.05), 
-    ])
-    # Nota: sin bbox_params porque las cajas ya están gestionadas por YOLO
-    # Solo tocamos los píxeles, no la geometría
-
-    def on_train_batch_start(trainer, *cb_args, **cb_kwargs):
-        # Extraer imgs soportando distintas firmas de callback (trainer.batch, batch arg, kwargs)
-        imgs = None
-        batch_container = None
-
-        if hasattr(trainer, "batch") and isinstance(trainer.batch, dict) and "img" in trainer.batch:
-            imgs = trainer.batch["img"]
-            batch_container = ("trainer", None)
-        else:
-            # Positional batch (común: (imgs, targets, paths, shapes))
-            if len(cb_args) >= 1:
-                batch = cb_args[0]
-                if isinstance(batch, dict) and "img" in batch:
-                    imgs = batch["img"]
-                    batch_container = ("arg", 0)
-                elif isinstance(batch, (list, tuple)) and len(batch) >= 1:
-                    imgs = batch[0]
-                    batch_container = ("arg", 0)
-
-            # Keyword 'batch'
-            if imgs is None and "batch" in cb_kwargs:
-                batch = cb_kwargs.get("batch")
-                if isinstance(batch, dict) and "img" in batch:
-                    imgs = batch["img"]
-                    batch_container = ("kw", "batch")
-                elif isinstance(batch, (list, tuple)) and len(batch) >= 1:
-                    imgs = batch[0]
-                    batch_container = ("kw", "batch")
-
-        if imgs is None:
-            return
-
-        device = imgs.device if hasattr(imgs, "device") else torch.device("cpu")
-        imgs_np = (imgs.cpu().numpy() * 255).astype(np.uint8)
-
-        # Transponer todo el batch de una vez
-        imgs_hwc = imgs_np.transpose(0, 2, 3, 1)  # (B, H, W, C)
-
-        augmented = np.stack([pipeline(image=img)["image"] for img in imgs_hwc])
-        augmented_tensor = torch.from_numpy(
-            augmented.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
-        ).to(device, non_blocking=True)  # non_blocking=True para transferencia async
-
-        # Escribir de vuelta en el contenedor original si es mutable
-        if batch_container is None:
-            return
-        where, key = batch_container
-        if where == "trainer":
-            trainer.batch["img"] = augmented_tensor
-        elif where == "arg":
-            try:
-                cb_args[key][0] = augmented_tensor
-            except Exception:
-                # si no mutable, intentar si es lista dentro de args
-                try:
-                    mutable = list(cb_args)
-                    if isinstance(mutable[key], (list, tuple)):
-                        inner = list(mutable[key])
-                        inner[0] = augmented_tensor
-                        mutable[key] = type(cb_args[key])(inner)
-                except Exception:
-                    pass
-        elif where == "kw":
-            try:
-                cb_kwargs[key] = augmented_tensor
-            except Exception:
-                pass
-
-    return on_train_batch_start
-
 
 def _convert_coco_to_yolo(
     annotation_path: Path,
@@ -291,9 +168,9 @@ def parse_args() -> argparse.Namespace:
                         help="Model variant: yolo11n/s/m/l/x, yolov8m, etc.")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--image-size", type=int, default=640)
+    parser.add_argument("--image-size", type=int, default=960)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--patience", type=int, default=40)
@@ -351,7 +228,13 @@ def main() -> None:
         model_name = str(found) if found else model_arg + ".pt"
 
     print(f"[yolo] Cargando YOLO: {model_name}")
-    model = YOLO(model_name)
+    # 1. Asegúrate de que el nombre ayude a identificar el scale 's'
+    if "p2" in model_name.lower():
+        print('Cargando arquitectura P2 (Small) para objetos finos...')
+        # Fuerza que use el YAML y cargue los pesos del Small
+        model = YOLO("yolo26s-p2.yaml").load("yolo26s.pt")
+    else:
+        model = YOLO(model_name)
 
     run_name = f"clearsar_{args.model.replace('.pt', '')}"
     yolo_runs_dir = project_root / "outputs" / "yolo_runs"
@@ -359,10 +242,13 @@ def main() -> None:
     train_kwargs = dict(
         data=str(yaml_path),
         epochs=args.epochs,
+        # Para objetos pequeños conviene entrenar con resolución alta.
         imgsz=args.image_size,
         batch=args.batch_size,
         workers=args.num_workers,
         lr0=args.lr,
+        lrf=0.01,
+        weight_decay=5e-4,
         seed=args.seed,
         patience=args.patience,
         project=str(yolo_runs_dir),
@@ -377,7 +263,8 @@ def main() -> None:
         # Rotar 90° generaría rayas verticales que no existen en el test set
         # → el modelo aprendería patrones falsos. Mantenemos solo flips.
         degrees=0.0,
-        #rect=True,  # entrenamiento rectangular (no square) para aprovechar mejor la resolución de las rayas finas
+        # Entrenamiento rectangular para reducir padding y ganar resolución efectiva.
+        #rect=True,
 
         # scale=0.3: la mediana de alto de caja es 10px. Con scale=0.5 (el
         # valor anterior) el zoom-out llevaría esa mediana a 5px → casi
@@ -418,17 +305,17 @@ def main() -> None:
         # ── Mosaic / copy-paste ────────────────────────────────────────────
         # mosaic=1.0: combina 4 imágenes → el modelo ve RFI en muchos
         # contextos distintos. Muy útil con pocos datos (3154 imágenes).
-        mosaic=1.0,
+        mosaic=0.8,
 
         # close_mosaic=10: desactiva mosaic en las últimas 10 épocas para
         # que el modelo se estabilice con imágenes realistas antes de
         # la evaluación final. Mejora el mAP en val.
-        close_mosaic=15,
+        close_mosaic=20,
 
         # copy_paste=0.3: copia objetos RFI de una imagen a otra. Especialmente
         # útil aquí porque el 48.8% de las cajas son "small" (<1024px²) y hay
         # pocas por imagen (mediana=2). Multiplica ejemplos de RFI sin anotar más.
-        copy_paste=0.4,
+        copy_paste=0.2,
 
         # mixup=0.0: mixup en detección superpone dos imágenes y mezcla sus
         # bounding boxes. Con rayas finas esto genera targets ambiguos y
@@ -438,7 +325,9 @@ def main() -> None:
         # ── Optimizador y scheduler ────────────────────────────────────────
         optimizer="AdamW",
         cos_lr=True,
-        warmup_epochs=3,
+        warmup_epochs=5,
+        warmup_momentum=0.8,
+        warmup_bias_lr=0.1,
 
         # ── Loss weights ───────────────────────────────────────────────────
         # box=7.5: peso del box regression loss. Default de YOLO, bien
@@ -449,11 +338,15 @@ def main() -> None:
         # menos importancia que el box loss.
         cls=0.5,
 
+        # Una sola clase en ClearSAR.
+        single_cls=True,
+
         # ── Misc ───────────────────────────────────────────────────────────
         amp=True,
         verbose=True,
         erasing=0.0,
         augment=True,
+        cache=True,
     )
 
     if args.device is not None:
@@ -467,10 +360,6 @@ def main() -> None:
             print(f"[yolo] Resuming from {last_ckpt}")
         else:
             print(f"[yolo] No checkpoint found at {last_ckpt}, starting fresh")
-
-    # Registrar callback antes de llamar a train
-    callback_fn = build_sar_augment_callback()
-    model.add_callback("on_train_batch_start", callback_fn)
 
     results = model.train(**train_kwargs)
 

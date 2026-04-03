@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import random
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,13 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Error fetching version info.*",
+    category=UserWarning,
+    module=r"albumentations\.check_version",
+)
 
 try:
     import albumentations as A
@@ -61,11 +69,11 @@ def get_train_transforms(image_size: Optional[Tuple[int, int]] = None) -> Any:
             p=0.2,
         ),
         A.CoarseDropout(
-            num_holes_range=(1, 4),
-            hole_height_range=(8, 32),
-            hole_width_range=(8, 32),
+            num_holes_range=(1, 8),
+            hole_height_range=(2, 8), # Agujeros mucho más pequeños
+            hole_width_range=(2, 8),
             fill=0,
-            p=0.3,
+            p=0.1,
         ),
         A.RandomBrightnessContrast(
             brightness_limit=0.2,
@@ -83,8 +91,8 @@ def get_train_transforms(image_size: Optional[Tuple[int, int]] = None) -> Any:
         bbox_params=A.BboxParams(
             format="pascal_voc",
             label_fields=["labels"],
-            min_area=4,
-            min_visibility=0.05,
+            min_area=1,
+            min_visibility=0.01,
         ),
     )
 

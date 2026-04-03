@@ -70,7 +70,7 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
 
     if args.profile == "quality":
         cfg.model.architecture = "fasterrcnn_resnet50_fpn_v2"
-        cfg.train.epochs = max(cfg.train.epochs, 50)
+        cfg.train.epochs = cfg.train.epochs
         cfg.train.batch_size = min(cfg.train.batch_size, 3)
         cfg.train.early_stopping_patience = max(cfg.train.early_stopping_patience, 12)
         cfg.train.image_size = None
