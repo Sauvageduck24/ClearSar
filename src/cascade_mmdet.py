@@ -95,7 +95,8 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
 
     if arch == CASCADE_ARCH_CONVNEXT_XL:
         backbone = {
-            "type": "ConvNeXt",
+            # ConvNeXt is provided by MMPretrain in many MMDet installs.
+            "type": "mmpretrain.ConvNeXt",
             "arch": "xlarge",
             "out_indices": [0, 1, 2, 3],
             "drop_path_rate": 0.50,
@@ -380,6 +381,10 @@ def _build_mmdet_cfg(
 
     runtime_cfg: Dict[str, Any] = {
         "default_scope": "mmdet",
+        "custom_imports": {
+            "imports": ["mmpretrain.models"],
+            "allow_failed_imports": False,
+        },
         "work_dir": str(work_dir),
         "model": model,
         "train_dataloader": {
@@ -512,6 +517,15 @@ def train_cascade_rcnn(cfg: Config) -> None:
         ) from exc
 
     _patch_transformers_nn_nameerror()
+
+    if cfg.model.architecture == CASCADE_ARCH_CONVNEXT_XL:
+        try:
+            import mmpretrain  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "ConvNeXt-XL requires mmpretrain. Install with: pip install mmpretrain"
+            ) from exc
+
     try:
         register_all_modules(init_default_scope=True)
     except NameError as exc:
