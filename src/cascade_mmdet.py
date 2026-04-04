@@ -360,10 +360,10 @@ def _build_mmdet_cfg(
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
         {
             "type": "PhotoMetricDistortion",
-            "brightness_delta": 32,
-            "contrast_range": (0.6, 1.4),
-            "saturation_range": (0.6, 1.4),
-            "hue_delta": 10,
+            "brightness_delta": 20,
+            "contrast_range": (0.8, 1.2),
+            "saturation_range": (1.0, 1.0),  # sin cambio de saturación
+            "hue_delta": 0,                   # sin cambio de hue
         },
         {"type": "PackDetInputs"},
     ]
@@ -479,11 +479,13 @@ def _build_mmdet_cfg(
             },
             {
                 "type": "CosineAnnealingLR",
-                "eta_min": 1e-7,
+                "eta_min": 1e-6,
                 "by_epoch": True,
-                "begin": min(3, max(1, int(cfg.train.epochs // 10))),
+                # Empezará en el 25% del entrenamiento (ej: época 5 de 20)
+                "begin": int(cfg.train.epochs * 0.25), 
                 "end": int(cfg.train.epochs),
-                "T_max": max(1, int(cfg.train.epochs) - min(3, max(1, int(cfg.train.epochs // 10)))),
+                # T_max tiene que ser exactamente la diferencia para que la curva termine en eta_min
+                "T_max": int(cfg.train.epochs) - int(cfg.train.epochs * 0.25),
             },
         ],
         "default_hooks": {
