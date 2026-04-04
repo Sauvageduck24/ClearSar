@@ -185,7 +185,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": 7,
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -205,7 +205,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": 7,
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -225,7 +225,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": 7,
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
