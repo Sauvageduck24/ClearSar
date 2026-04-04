@@ -28,3 +28,8 @@ which python
 /usr/bin/python -m mim install mmdet
 
 /usr/bin/python -m pip install mmpretrain
+
+# Forzamos la reinstalación de la última versión estable de la rama 1.x
+/usr/bin/python -m pip install "numpy<2.0.0" "setuptools<70.0.0" --force-reinstall
+
+/usr/bin/python -c "import torch; import numpy; print(f'Torch OK. NumPy version: {numpy.__version__}')"
