@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import builtins
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -454,6 +455,23 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
     return runtime_cfg
 
 
+def _patch_transformers_nn_nameerror() -> None:
+    """
+    Work around a known transformers import bug that can raise:
+    NameError: name 'nn' is not defined
+
+    This happens when transformers disables torch integration (e.g. strict
+    version gate) but still evaluates type hints referencing nn.Module.
+    """
+    try:
+        import torch
+    except Exception:
+        return
+
+    if not hasattr(builtins, "nn"):
+        builtins.nn = torch.nn
+
+
 def train_cascade_rcnn(cfg: Config) -> None:
     try:
         from mmengine.config import Config as MMConfig
@@ -465,7 +483,17 @@ def train_cascade_rcnn(cfg: Config) -> None:
             "pip install -U openmim && mim install mmengine mmcv mmdet"
         ) from exc
 
-    register_all_modules(init_default_scope=True)
+    _patch_transformers_nn_nameerror()
+    try:
+        register_all_modules(init_default_scope=True)
+    except NameError as exc:
+        if "nn" in str(exc):
+            raise RuntimeError(
+                "MMDetection failed due to an incompatible transformers build. "
+                "Try pinning transformers to a stable version (for example 4.44.x) "
+                "or upgrading torch to a version supported by your transformers package."
+            ) from exc
+        raise
 
     train_ids, val_ids = split_train_val_image_ids(
         annotation_path=cfg.paths.train_annotations_path,
