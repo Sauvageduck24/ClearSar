@@ -105,7 +105,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "init_cfg": {
                 "type": "Pretrained",
                 "checkpoint": "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_in21k_20220124-f909bad7.pth",
-                "prefix": None,
+                "prefix": "backbone",
             },
         }
         neck = {
