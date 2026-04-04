@@ -91,6 +91,8 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 /usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 50 --batch-size 6 --num-workers 16 --image-size 512
 
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 50 --batch-size 6 --num-workers 16 --image-size 1024
+
 # ENSEMBLE
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe e:/Sauvageduck24/ClearSar/submissions/ensemble_submissions.py --submissions e:/Sauvageduck24/ClearSar/submissions/submission_yolo_0_29.zip e:/Sauvageduck24/ClearSar/submissions/submission_yolo_0_3857.zip --output e:/Sauvageduck24/ClearSar/submissions/ensemble_submission.zip --method wbf --max-dets-per-image 300 --min-score 0.0 --weights 0.4 0.6
