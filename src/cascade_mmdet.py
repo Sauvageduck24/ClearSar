@@ -355,7 +355,7 @@ def _build_mmdet_cfg(
         },
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
         {"type": "PackDetInputs"},
-    ],
+    ]
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
