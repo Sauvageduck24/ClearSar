@@ -160,7 +160,7 @@ def _build_mmdet_cfg(
                 "target_stds": [1.0, 1.0, 1.0, 1.0],
             },
             "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": True, "loss_weight": 1.0},
-            "loss_bbox": {"type": "GIoULoss", "loss_weight": 10.0},
+            "loss_bbox": {"type": "L1Loss", "loss_weight": 1.0},
         },
         "roi_head": {
             "type": "CascadeRoIHead",
@@ -179,6 +179,7 @@ def _build_mmdet_cfg(
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
                     "num_classes": num_fg_classes,
+                    "reg_decoded_bbox": True,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -190,7 +191,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "SmoothL1Loss", "beta": 1.0, "loss_weight": 1.0},
+                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
                     "type": "Shared2FCBBoxHead",
@@ -198,6 +199,7 @@ def _build_mmdet_cfg(
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
                     "num_classes": num_fg_classes,
+                    "reg_decoded_bbox": True,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -209,7 +211,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "SmoothL1Loss", "beta": 1.0, "loss_weight": 1.0},
+                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
                     "type": "Shared2FCBBoxHead",
@@ -217,6 +219,7 @@ def _build_mmdet_cfg(
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
                     "num_classes": num_fg_classes,
+                    "reg_decoded_bbox": True,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -228,7 +231,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "SmoothL1Loss", "beta": 1.0, "loss_weight": 1.0},
+                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
             ],
         },
