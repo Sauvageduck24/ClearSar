@@ -490,6 +490,10 @@ def _build_mmdet_cfg(
         "log_level": "INFO",
         "load_from": None,
         "resume": False,
+        "auto_scale_lr": {
+            "enable": True,
+            "base_batch_size": 16  # Asumimos que 1e-4 es tu LR ideal para un batch total de 16
+        },
     }
 
     return runtime_cfg
