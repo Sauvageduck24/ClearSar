@@ -351,15 +351,6 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
-        dict(
-            type='RandomChoice',
-            transforms=[
-                dict(type='Rotate', angle=0),
-                dict(type='Rotate', angle=90),
-                dict(type='Rotate', angle=180),
-                dict(type='Rotate', angle=270),
-            ]
-        ),
         {"type": "PackDetInputs"},
     ]
     test_pipeline = [
