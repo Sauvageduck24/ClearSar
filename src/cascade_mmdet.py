@@ -351,12 +351,15 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
-        {
-            "type": "RandomRotate",
-            "prob": 0.5,
-            "angle_range": 90,  # solo 0/90/180/270 — RFI son estructuras orientadas
-            "rect_obj_labels": [0],  # reajusta boxes al girar
-        },
+        dict(
+            type='RandomChoice',
+            transforms=[
+                dict(type='Rotate', angle=0),
+                dict(type='Rotate', angle=90),
+                dict(type='Rotate', angle=180),
+                dict(type='Rotate', angle=270),
+            ]
+        ),
         {"type": "PackDetInputs"},
     ]
     test_pipeline = [
