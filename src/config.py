@@ -19,7 +19,11 @@ class PathsConfig:
 @dataclass
 class ModelConfig:
     architecture: str = "fasterrcnn_resnet50_fpn_v2"
-    # architecture: str = "fasterrcnn_mobilenet_v3_large_fpn"
+    # Supported values:
+    # - fasterrcnn_resnet50_fpn_v2
+    # - fasterrcnn_mobilenet_v3_large_fpn
+    # - cascade_rcnn_swin_l
+    # - cascade_rcnn_convnext_xl
     pretrained_weights: str = "DEFAULT"
     num_classes: int = 2  # background + RFI
     score_thresh: float = 0.001

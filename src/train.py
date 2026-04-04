@@ -24,6 +24,7 @@ from src.dataset import (
     split_train_val_image_ids,
     xyxy_to_coco_xywh,
 )
+from src.cascade_mmdet import is_cascade_architecture, train_cascade_rcnn
 from src.model import build_model
 from src.utils.repro import resolve_device, set_seed
 
@@ -38,7 +39,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
-    parser.add_argument("--arch", type=str, default=None)
+    parser.add_argument(
+        "--arch",
+        type=str,
+        choices=[
+            "fasterrcnn_resnet50_fpn_v2",
+            "fasterrcnn_mobilenet_v3_large_fpn",
+            "cascade_rcnn_swin_l",
+            "cascade_rcnn_convnext_xl",
+        ],
+        default=None,
+    )
     parser.add_argument("--image-size", type=int, default=None)
     parser.add_argument("--disable-step-limits", action="store_true")
     parser.add_argument("--grad-accum-steps", type=int, default=None)
@@ -264,6 +275,11 @@ def main() -> None:
     cfg = default_config(project_root=args.project_root)
     apply_overrides(cfg, args)
     ensure_dirs(cfg)
+
+    if is_cascade_architecture(cfg.model.architecture):
+        print(f"[train] Using MMDetection Cascade pipeline: {cfg.model.architecture}")
+        train_cascade_rcnn(cfg)
+        return
 
     set_seed(cfg.train.seed)
     device = resolve_device()
