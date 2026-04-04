@@ -104,7 +104,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "gap_before_final_norm": False,
             "init_cfg": {
                 "type": "Pretrained",
-                "checkpoint": "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_32xb128_in1k_20220124-6879cbe2.pth",
+                "checkpoint": "https://dl.fbaipublicfiles.com/convnext/convnext_xlarge_22k_224.pth",
                 "prefix": None,
             },
         }
