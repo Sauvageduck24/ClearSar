@@ -89,9 +89,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "type": "FPN",
             "in_channels": [192, 384, 768, 1536],
             "out_channels": 256,
-            "num_outs": 6,
-            "start_level": 0,
-            "add_extra_convs": "on_input",
+            "num_outs": 5,
         }
         return backbone, neck
 
@@ -114,9 +112,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 6,
-            "start_level": 0,
-            "add_extra_convs": "on_input",
+            "num_outs": 5,
         }
         return backbone, neck
 
@@ -160,7 +156,7 @@ def _build_mmdet_cfg(
                 "type": "AnchorGenerator",
                 "scales": [1, 2, 4, 8],
                 "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
-                "strides": [2, 4, 8, 16, 32, 64],
+                "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
                 "type": "DeltaXYWHBBoxCoder",
@@ -182,7 +178,7 @@ def _build_mmdet_cfg(
                     "sampling_ratio": 2,     # sampling_ratio > 0 es más preciso para objetos pequeños
                 },
                 "out_channels": 256,
-                "featmap_strides": [2, 4, 8, 16, 32],
+                "featmap_strides": [4, 8, 16, 32],
             },
             "bbox_head": [
                 {
