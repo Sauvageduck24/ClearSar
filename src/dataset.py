@@ -41,7 +41,7 @@ def xyxy_to_coco_xywh(box: Sequence[float]) -> List[float]:
 
 def get_train_transforms(image_size: Optional[Tuple[int, int]] = None) -> Any:
     """
-    SAR-focused data augmentation pipeline preserving RGB signatures.
+    SAR-focused data augmentation pipeline preserving HBB signatures.
 
     Notes:
     - Boxes are handled in pascal_voc format [x1, y1, x2, y2].
@@ -53,28 +53,7 @@ def get_train_transforms(image_size: Optional[Tuple[int, int]] = None) -> Any:
     transforms: List[Any] = [
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-        A.Affine(
-            scale=(0.8, 1.2),
-            translate_percent=(-0.10, 0.10),
-            rotate=(-15, 15),
-            fit_output=False,
-            p=0.4,
-        ),
-        A.OneOf(
-            [
-                A.GridDistortion(num_steps=5, distort_limit=0.15, p=1.0),
-                A.ElasticTransform(alpha=20.0, sigma=6.0, p=1.0),
-            ],
-            p=0.2,
-        ),
-        A.CoarseDropout(
-            num_holes_range=(1, 8),
-            hole_height_range=(2, 8), # Agujeros mucho más pequeños
-            hole_width_range=(2, 8),
-            fill=0,
-            p=0.1,
-        ),
+        A.RandomSizedBBoxSafeCrop(width=500, height=500, erosion_rate=0.0, p=0.3),
         A.RandomBrightnessContrast(
             brightness_limit=0.2,
             contrast_limit=0.25,
@@ -92,7 +71,7 @@ def get_train_transforms(image_size: Optional[Tuple[int, int]] = None) -> Any:
             format="pascal_voc",
             label_fields=["labels"],
             min_area=1,
-            min_visibility=0.01,
+            min_visibility=0.1,
         ),
     )
 
