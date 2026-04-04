@@ -202,35 +202,35 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                 },
             ],
         },
-        "train_cfg": [
-            {
-                "rpn": {
-                    "assigner": {
-                        "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.7,
-                        "neg_iou_thr": 0.3,
-                        "min_pos_iou": 0.3,
-                        "match_low_quality": True,
-                        "ignore_iof_thr": -1,
-                    },
-                    "sampler": {
-                        "type": "RandomSampler",
-                        "num": 256,
-                        "pos_fraction": 0.5,
-                        "neg_pos_ub": -1,
-                        "add_gt_as_proposals": False,
-                    },
-                    "allowed_border": -1,
-                    "pos_weight": -1,
-                    "debug": False,
+        "train_cfg": {
+            "rpn": {
+                "assigner": {
+                    "type": "MaxIoUAssigner",
+                    "pos_iou_thr": 0.7,
+                    "neg_iou_thr": 0.3,
+                    "min_pos_iou": 0.3,
+                    "match_low_quality": True,
+                    "ignore_iof_thr": -1,
                 },
-                "rpn_proposal": {
-                    "nms_pre": 4000,
-                    "max_per_img": 2000,
-                    "nms": {"type": "nms", "iou_threshold": 0.7},
-                    "min_bbox_size": 0,
+                "sampler": {
+                    "type": "RandomSampler",
+                    "num": 256,
+                    "pos_fraction": 0.5,
+                    "neg_pos_ub": -1,
+                    "add_gt_as_proposals": False,
                 },
-                "rcnn": {
+                "allowed_border": -1,
+                "pos_weight": -1,
+                "debug": False,
+            },
+            "rpn_proposal": {
+                "nms_pre": 4000,
+                "max_per_img": 2000,
+                "nms": {"type": "nms", "iou_threshold": 0.7},
+                "min_bbox_size": 0,
+            },
+            "rcnn": [
+                {
                     "assigner": {
                         "type": "MaxIoUAssigner",
                         "pos_iou_thr": 0.5,
@@ -249,9 +249,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     "pos_weight": -1,
                     "debug": False,
                 },
-            },
-            {
-                "rcnn": {
+                {
                     "assigner": {
                         "type": "MaxIoUAssigner",
                         "pos_iou_thr": 0.6,
@@ -269,10 +267,8 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     },
                     "pos_weight": -1,
                     "debug": False,
-                }
-            },
-            {
-                "rcnn": {
+                },
+                {
                     "assigner": {
                         "type": "MaxIoUAssigner",
                         "pos_iou_thr": 0.7,
@@ -290,9 +286,9 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     },
                     "pos_weight": -1,
                     "debug": False,
-                }
-            },
-        ],
+                },
+            ],
+        },
         "test_cfg": {
             "rpn": {
                 "nms_pre": 2000,
