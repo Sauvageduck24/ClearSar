@@ -78,7 +78,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "window_size": 12,
             "mlp_ratio": 4,
             "qkv_bias": True,
-            "drop_path_rate": 0.30,
+            "drop_path_rate": 0.10,
             "patch_norm": True,
             "out_indices": (0, 1, 2, 3),
             "with_cp": False,
@@ -154,8 +154,8 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [1, 2, 4],
-                "ratios": [1.0, 2.0, 5.0, 10.0, 20.0, 30.0],
+                "scales": [1, 2, 4, 8],
+                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -261,8 +261,8 @@ def _build_mmdet_cfg(
                 "debug": False,
             },
             "rpn_proposal": {
-                "nms_pre": 4000,
-                "max_per_img": 2000,
+                "nms_pre": 6000,
+                "max_per_img": 3000,
                 "nms": {"type": "nms", "iou_threshold": 0.7},
                 "min_bbox_size": 0,
             },
@@ -328,14 +328,19 @@ def _build_mmdet_cfg(
         },
         "test_cfg": {
             "rpn": {
-                "nms_pre": 2000,
-                "max_per_img": 1000,
+                "nms_pre": 4000,
+                "max_per_img": 2000,
                 "nms": {"type": "nms", "iou_threshold": 0.7},
                 "min_bbox_size": 0,
             },
             "rcnn": {
                 "score_thr": 0.0,
-                "nms": {"type": "nms", "iou_threshold": float(cfg.model.nms_thresh)},
+                "nms": {
+                    "type": "soft_nms",        # en lugar de "nms"
+                    "iou_threshold": 0.5,
+                    "min_score": 0.001,
+                },
+                "max_per_img": 300,
                 "max_per_img": int(cfg.model.detections_per_img),
             },
         },
@@ -345,7 +350,13 @@ def _build_mmdet_cfg(
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "RandomFlip", "prob": 0.5},
+        {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
+        {
+            "type": "RandomRotate",
+            "prob": 0.5,
+            "angle_range": 90,  # solo 0/90/180/270 — RFI son estructuras orientadas
+            "rect_obj_labels": [0],  # reajusta boxes al girar
+        },
         {"type": "PackDetInputs"},
     ]
     test_pipeline = [
@@ -491,7 +502,7 @@ def _build_mmdet_cfg(
         "load_from": None,
         "resume": False,
         "auto_scale_lr": {
-            "enable": True,
+            "enable": False,
             "base_batch_size": 16  # Asumimos que 1e-4 es tu LR ideal para un batch total de 16
         },
     }
