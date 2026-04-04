@@ -13,9 +13,18 @@ which python
 # 2. Instalar una versión de NumPy a prueba de balas para PyTorch 2.1
 /usr/bin/python -m pip install "numpy==1.26.3"
 
+/usr/bin/python -m pip install pycocotools tqdm
+
 # 3. Instalar PyTorch DESPUÉS de NumPy para que detecte la librería correctamente
 /usr/bin/python -m pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118
 
------------------------------------------------------------------------
+# 1. Instalar la herramienta de gestión de OpenMMLab (MIM)
+/usr/bin/python -m pip install -U openmim
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 50 --batch-size 4 --num-workers 6 --image-size 512
+# 2. Instalar los componentes base usando MIM 
+# MIM se encarga de buscar la versión que coincida con tu PyTorch 2.1.0 y CUDA 11.8
+/usr/bin/python -m mim install mmengine
+/usr/bin/python -m mim install "mmcv>=2.1.0"
+/usr/bin/python -m mim install mmdet
+
+/usr/bin/python -m pip install mmpretrain
