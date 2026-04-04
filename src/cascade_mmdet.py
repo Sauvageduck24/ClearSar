@@ -47,6 +47,27 @@ def _subset_coco(coco: Dict[str, Any], image_ids: Iterable[int]) -> Dict[str, An
     return subset
 
 
+def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
+    categories = coco.get("categories", [])
+    if not isinstance(categories, list):
+        return ("rfi",)
+
+    names: List[str] = []
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        raw_name = cat.get("name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            names.append(raw_name.strip())
+
+    if not names:
+        return ("rfi",)
+
+    # Keep insertion order while removing duplicates.
+    uniq = list(dict.fromkeys(names))
+    return tuple(uniq)
+
+
 def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if arch == CASCADE_ARCH_SWIN_L:
         backbone = {
@@ -93,7 +114,13 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
     raise ValueError(f"Unsupported Cascade architecture: {arch}")
 
 
-def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work_dir: Path) -> Dict[str, Any]:
+def _build_mmdet_cfg(
+    cfg: Config,
+    train_ann_path: Path,
+    val_ann_path: Path,
+    work_dir: Path,
+    class_names: Tuple[str, ...],
+) -> Dict[str, Any]:
     if cfg.train.image_size is None:
         img_h, img_w = (1024, 1024)
     else:
@@ -103,6 +130,8 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
 
     # Dataset statistics show tiny boxes and extreme aspect ratios; use aggressive
     # anchor ratios and small scales to increase recall on thin artifacts.
+    num_fg_classes = len(class_names)
+
     model = {
         "type": "CascadeRCNN",
         "data_preprocessor": {
@@ -121,7 +150,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
             "anchor_generator": {
                 "type": "AnchorGenerator",
                 "scales": [1, 2, 4],
-                "ratios": [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0],
+                "ratios": [1.0, 2.0, 5.0, 10.0, 20.0, 30.0],
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -130,7 +159,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                 "target_stds": [1.0, 1.0, 1.0, 1.0],
             },
             "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": True, "loss_weight": 1.0},
-            "loss_bbox": {"type": "L1Loss", "loss_weight": 1.0},
+            "loss_bbox": {"type": "GIoULoss", "loss_weight": 10.0},
         },
         "roi_head": {
             "type": "CascadeRoIHead",
@@ -148,7 +177,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
-                    "num_classes": cfg.model.num_classes - 1,
+                    "num_classes": num_fg_classes,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -167,7 +196,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
-                    "num_classes": cfg.model.num_classes - 1,
+                    "num_classes": num_fg_classes,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -186,7 +215,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": 7,
-                    "num_classes": cfg.model.num_classes - 1,
+                    "num_classes": num_fg_classes,
                     "bbox_coder": {
                         "type": "DeltaXYWHBBoxCoder",
                         "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -297,7 +326,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
                 "min_bbox_size": 0,
             },
             "rcnn": {
-                "score_thr": float(cfg.model.score_thresh),
+                "score_thr": 0.0,
                 "nms": {"type": "nms", "iou_threshold": float(cfg.model.nms_thresh)},
                 "max_per_img": int(cfg.model.detections_per_img),
             },
@@ -307,13 +336,13 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
     train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": False},
+        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5},
         {"type": "PackDetInputs"},
     ]
     test_pipeline = [
         {"type": "LoadImageFromFile"},
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": False},
+        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "LoadAnnotations", "with_bbox": True},
         {
             "type": "PackDetInputs",
@@ -324,6 +353,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
     dataroot = str(cfg.paths.project_root) + "/"
     train_dataset: Dict[str, Any] = {
         "type": "CocoDataset",
+        "metainfo": {"classes": class_names},
         "data_root": dataroot,
         "ann_file": str(train_ann_path),
         "data_prefix": {"img": "data/images/train/"},
@@ -368,6 +398,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
             "sampler": {"type": "DefaultSampler", "shuffle": False},
             "dataset": {
                 "type": "CocoDataset",
+                "metainfo": {"classes": class_names},
                 "data_root": dataroot,
                 "ann_file": str(val_ann_path),
                 "data_prefix": {"img": "data/images/train/"},
@@ -383,6 +414,7 @@ def _build_mmdet_cfg(cfg: Config, train_ann_path: Path, val_ann_path: Path, work
             "sampler": {"type": "DefaultSampler", "shuffle": False},
             "dataset": {
                 "type": "CocoDataset",
+                "metainfo": {"classes": class_names},
                 "data_root": dataroot,
                 "ann_file": str(val_ann_path),
                 "data_prefix": {"img": "data/images/train/"},
@@ -498,6 +530,9 @@ def train_cascade_rcnn(cfg: Config) -> None:
     )
 
     coco = _load_coco(cfg.paths.train_annotations_path)
+    class_names = _extract_class_names_from_coco(coco)
+    print(f"[cascade] classes={class_names} (num_classes={len(class_names)})")
+
     train_ann_path = cfg.paths.outputs_dir / "cascade_train_split.json"
     val_ann_path = cfg.paths.outputs_dir / "cascade_val_split.json"
     _write_coco(train_ann_path, _subset_coco(coco, train_ids))
@@ -511,6 +546,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
         train_ann_path=train_ann_path,
         val_ann_path=val_ann_path,
         work_dir=work_dir,
+        class_names=class_names,
     )
     config_path = work_dir / "cascade_config.py"
     MMConfig(mmdet_cfg).dump(str(config_path))
