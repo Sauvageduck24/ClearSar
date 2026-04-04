@@ -172,7 +172,11 @@ def _build_mmdet_cfg(
             "stage_loss_weights": [1.0, 0.5, 0.25],
             "bbox_roi_extractor": {
                 "type": "SingleRoIExtractor",
-                "roi_layer": {"type": "RoIAlign", "output_size": 7, "sampling_ratio": 0},
+                "roi_layer": {
+                    "type": "RoIAlign",
+                    "output_size": (4, 14),  # alto x ancho — más largo para capturar líneas
+                    "sampling_ratio": 2,     # sampling_ratio > 0 es más preciso para objetos pequeños
+                },
                 "out_channels": 256,
                 "featmap_strides": [4, 8, 16, 32],
             },
