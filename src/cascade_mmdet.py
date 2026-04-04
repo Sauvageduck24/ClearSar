@@ -102,7 +102,13 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "drop_path_rate": 0.50,
             "layer_scale_init_value": 1.0,
             "gap_before_final_norm": False,
-            "init_cfg": None,
+            "init_cfg": {
+                "type": "Pretrained",
+                "checkpoint": "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_32xb128_in1k_20220124-6879cbe2.pth",
+                "map_location": None,
+                "prefix": None,
+                "strict": False,
+            },
         }
         neck = {
             "type": "FPN",
@@ -452,15 +458,15 @@ def _build_mmdet_cfg(
                 "start_factor": 0.1,
                 "by_epoch": True,
                 "begin": 0,
-                "end": min(5, max(1, int(cfg.train.epochs // 5))),
+                "end": min(3, max(1, int(cfg.train.epochs // 10))),
             },
             {
                 "type": "CosineAnnealingLR",
                 "eta_min": 1e-7,
                 "by_epoch": True,
-                "begin": min(5, max(1, int(cfg.train.epochs // 5))),
+                "begin": min(3, max(1, int(cfg.train.epochs // 10))),
                 "end": int(cfg.train.epochs),
-                "T_max": max(1, int(cfg.train.epochs) - min(5, max(1, int(cfg.train.epochs // 5)))),
+                "T_max": max(1, int(cfg.train.epochs) - min(3, max(1, int(cfg.train.epochs // 10)))),
             },
         ],
         "default_hooks": {
