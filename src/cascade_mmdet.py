@@ -99,7 +99,7 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "type": "mmpretrain.ConvNeXt",
             "arch": "xlarge",
             "out_indices": [0, 1, 2, 3],
-            "drop_path_rate": 0.50,
+            "drop_path_rate": 0.10,
             "layer_scale_init_value": 1.0,
             "gap_before_final_norm": False,
             "init_cfg": {
@@ -308,9 +308,9 @@ def _build_mmdet_cfg(
                 {
                     "assigner": {
                         "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.7,
-                        "neg_iou_thr": 0.7,
-                        "min_pos_iou": 0.7,
+                        "pos_iou_thr": 0.6,
+                        "neg_iou_thr": 0.6,
+                        "min_pos_iou": 0.6,
                         "match_low_quality": False,
                         "ignore_iof_thr": -1,
                     },
@@ -340,7 +340,6 @@ def _build_mmdet_cfg(
                     "iou_threshold": 0.5,
                     "min_score": 0.001,
                 },
-                "max_per_img": 300,
                 "max_per_img": int(cfg.model.detections_per_img),
             },
         },
@@ -349,10 +348,14 @@ def _build_mmdet_cfg(
     train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
+        {
+            "type": "RandomChoiceResize",
+            "scales": [(384, 384), (448, 448), (512, 512), (576, 576), (640, 640)],
+            "keep_ratio": True,
+        },
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
         {"type": "PackDetInputs"},
-    ]
+    ],
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
