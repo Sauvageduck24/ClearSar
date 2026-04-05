@@ -156,7 +156,7 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [1, 2, 4, 8],
+                "scales": [1, 2],
                 "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
                 "strides": [4, 8, 16, 32, 64],
             },
