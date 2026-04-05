@@ -157,7 +157,7 @@ def _build_mmdet_cfg(
             "anchor_generator": {
                 "type": "AnchorGenerator",
                 "scales": [1, 2],
-                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
+                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -176,8 +176,8 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (4, 14),  # alto x ancho — más largo para capturar líneas
-                    "sampling_ratio": 2,     # sampling_ratio > 0 es más preciso para objetos pequeños
+                    "output_size": (7, 7),
+                    "sampling_ratio": 2,
                 },
                 "out_channels": 256,
                 "featmap_strides": [4, 8, 16, 32],
@@ -187,7 +187,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -207,7 +207,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -227,7 +227,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -394,12 +394,9 @@ def _build_mmdet_cfg(
     # In some mmcv/mmdet/torch combinations, RPN NMS can fail under autocast with:
     # "Index put requires the source and destination dtypes match".
     # We keep Cascade MMDet in fp32 for stability.
-    use_mmdet_amp = False
+    use_mmdet_amp = bool(cfg.train.use_amp)
     if cfg.train.use_amp:
-        print(
-            "[cascade] AMP requested but disabled for MMDet due to a known "
-            "mmcv batched_nms dtype mismatch issue. Falling back to fp32."
-        )
+        print("[cascade] AMP enabled for MMDet.")
 
     optim_wrapper_type = "AmpOptimWrapper" if use_mmdet_amp else "OptimWrapper"
     optim_wrapper: Dict[str, Any] = {
