@@ -249,7 +249,7 @@ def _build_mmdet_cfg(
             "rpn": {
                 "assigner": {
                     "type": "MaxIoUAssigner",
-                    "pos_iou_thr": 0.7,
+                    "pos_iou_thr": 0.6,
                     "neg_iou_thr": 0.3,
                     "min_pos_iou": 0.3,
                     "match_low_quality": True,
