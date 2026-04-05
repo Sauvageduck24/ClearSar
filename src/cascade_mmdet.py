@@ -137,6 +137,8 @@ def _build_mmdet_cfg(
     # anchor ratios and small scales to increase recall on thin artifacts.
     num_fg_classes = len(class_names)
 
+    warmup_end = min(5, max(2, int(cfg.train.epochs // 10)))
+
     model = {
         "type": "CascadeRCNN",
         "data_preprocessor": {
@@ -475,18 +477,17 @@ def _build_mmdet_cfg(
                 "start_factor": 0.1,
                 "by_epoch": True,
                 "begin": 0,
-                "end": min(3, max(1, int(cfg.train.epochs // 10))),
+                "end": warmup_end,
             },
             {
                 "type": "CosineAnnealingLR",
                 "eta_min": 1e-6,
                 "by_epoch": True,
-                # Empezará en el 25% del entrenamiento (ej: época 5 de 20)
-                "begin": int(cfg.train.epochs * 0.25), 
+                "begin": warmup_end,
                 "end": int(cfg.train.epochs),
-                # T_max tiene que ser exactamente la diferencia para que la curva termine en eta_min
-                "T_max": int(cfg.train.epochs) - int(cfg.train.epochs * 0.25),
+                "T_max": int(cfg.train.epochs) - warmup_end,
             },
+
         ],
         "default_hooks": {
             "timer": {"type": "IterTimerHook"},
