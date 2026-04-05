@@ -89,11 +89,11 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 # Cascade r cnn 
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 25 --batch-size 8 --num-workers 6 --image-size 512 --save-top-k 1 --lr 4e-4
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 25 --batch-size 16 --num-workers 8 --image-size 512 --save-top-k 1 --lr 1e-3
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 25 --batch-size 12 --num-workers 16 --image-size 768 --save-top-k 1 --lr 6e-4
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 25 --batch-size 12 --num-workers 16 --image-size 768 --save-top-k 1 --lr 1e-3
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 6 --num-workers 16 --image-size 1024 --save-top-k 1 --lr 3e-4
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 6 --num-workers 16 --image-size 1024 --save-top-k 1 --lr 1e-3
 
 # ENSEMBLE
 

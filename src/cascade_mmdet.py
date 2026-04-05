@@ -137,7 +137,7 @@ def _build_mmdet_cfg(
     # anchor ratios and small scales to increase recall on thin artifacts.
     num_fg_classes = len(class_names)
 
-    warmup_end = min(5, max(2, int(cfg.train.epochs // 10)))
+    warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
 
     model = {
         "type": "CascadeRCNN",
@@ -356,6 +356,7 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
+        {"type": "RandomCrop", "crop_size": (0.8, 0.8), "crop_type": "relative_range"},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
@@ -516,7 +517,7 @@ def _build_mmdet_cfg(
         "load_from": None,
         "resume": False,
         "auto_scale_lr": {
-            "enable": False,
+            "enable": True,
             "base_batch_size": 16  # Asumimos que 1e-4 es tu LR ideal para un batch total de 16
         },
     }
