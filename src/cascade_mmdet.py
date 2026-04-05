@@ -156,8 +156,8 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [1, 2],
-                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
+                "scales": [1, 2, 4, 8],
+                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -176,7 +176,7 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (7, 7),
+                    "output_size": (4, 14),
                     "sampling_ratio": 2,
                 },
                 "out_channels": 256,
@@ -187,7 +187,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (7, 7),
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -207,7 +207,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (7, 7),
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -227,7 +227,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (7, 7),
+                    "roi_feat_size": (4, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -268,7 +268,7 @@ def _build_mmdet_cfg(
             },
             "rpn_proposal": {
                 "nms_pre": 6000,
-                "max_per_img": 3000,
+                "max_per_img": int(cfg.model.detections_per_img),
                 "nms": {"type": "nms", "iou_threshold": 0.7},
                 "min_bbox_size": 0,
             },
@@ -335,7 +335,7 @@ def _build_mmdet_cfg(
         "test_cfg": {
             "rpn": {
                 "nms_pre": 4000,
-                "max_per_img": 2000,
+                "max_per_img": int(cfg.model.detections_per_img),
                 "nms": {"type": "nms", "iou_threshold": 0.7},
                 "min_bbox_size": 0,
             },
@@ -354,11 +354,7 @@ def _build_mmdet_cfg(
     train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
-        {
-            "type": "RandomChoiceResize",
-            "scales": [(512, 512), (640, 640), (768, 768)],
-            "keep_ratio": True,
-        },
+        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
         {
             "type": "PhotoMetricDistortion",
