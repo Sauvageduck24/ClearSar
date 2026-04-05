@@ -81,6 +81,11 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
 
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
+    if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
+        raise ValueError(
+            "All Cascade backbones require pretrained weights. "
+            f"Invalid pretrained_weights='{token}'."
+        )
     if token and token.upper() != "DEFAULT":
         return token
 
@@ -103,6 +108,16 @@ def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
         return "open-mmlab://msra/hrnetv2_w40"
 
     raise ValueError(f"Unsupported Cascade architecture: {arch}")
+
+
+def _ensure_pretrained_backbone(arch: str, backbone: Dict[str, Any]) -> None:
+    init_cfg = backbone.get("init_cfg") if isinstance(backbone, dict) else None
+    if not isinstance(init_cfg, dict):
+        raise ValueError(f"{arch} backbone is missing init_cfg for pretrained weights.")
+
+    checkpoint = init_cfg.get("checkpoint")
+    if init_cfg.get("type") != "Pretrained" or not isinstance(checkpoint, str) or not checkpoint.strip():
+        raise ValueError(f"{arch} backbone must define a non-empty pretrained checkpoint.")
 
 
 def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -133,6 +148,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_channels": 256,
             "num_outs": 5,
         }
+        _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch == CASCADE_ARCH_CONVNEXT_XL:
@@ -156,6 +172,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_channels": 256,
             "num_outs": 5,
         }
+        _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch in {CASCADE_ARCH_RESNET50, CASCADE_ARCH_RESNET101}:
@@ -180,6 +197,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_channels": 256,
             "num_outs": 5,
         }
+        _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch == CASCADE_ARCH_DCNV2:
@@ -205,6 +223,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_channels": 256,
             "num_outs": 5,
         }
+        _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch == CASCADE_ARCH_HRNET:
@@ -251,6 +270,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_channels": 256,
             "num_outs": 5,
         }
+        _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     raise ValueError(f"Unsupported Cascade architecture: {arch}")
