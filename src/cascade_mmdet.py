@@ -313,8 +313,8 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [1, 2, 4, 8],
-                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
+                "scales": [4, 8],
+                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -328,12 +328,12 @@ def _build_mmdet_cfg(
         "roi_head": {
             "type": "CascadeRoIHead",
             "num_stages": 3,
-            "stage_loss_weights": [1.0, 0.5, 0.25],
+            "stage_loss_weights": [1.0, 1.0, 1.0],
             "bbox_roi_extractor": {
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (4, 14),
+                    "output_size": (4, 16),
                     "sampling_ratio": 2,
                 },
                 "out_channels": 256,
@@ -344,7 +344,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (4, 16),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -364,7 +364,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (4, 16),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -384,7 +384,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 14),
+                    "roi_feat_size": (4, 16),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -471,9 +471,9 @@ def _build_mmdet_cfg(
                 {
                     "assigner": {
                         "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.6,
-                        "neg_iou_thr": 0.6,
-                        "min_pos_iou": 0.6,
+                        "pos_iou_thr": 0.7,
+                        "neg_iou_thr": 0.7,
+                        "min_pos_iou": 0.7,
                         "match_low_quality": False,
                         "ignore_iof_thr": -1,
                     },
@@ -491,7 +491,7 @@ def _build_mmdet_cfg(
         },
         "test_cfg": {
             "rpn": {
-                "nms_pre": 4000,
+                "nms_pre": 6000,
                 "max_per_img": int(cfg.model.detections_per_img),
                 "nms": {"type": "nms", "iou_threshold": 0.7},
                 "min_bbox_size": 0,
@@ -508,11 +508,22 @@ def _build_mmdet_cfg(
         },
     }
 
+    multiscale_train_scales = [
+        (int(img_w * 0.8), int(img_h * 0.8)),
+        (int(img_w), int(img_h)),
+        (int(img_w * 1.15), int(img_h * 1.15)),
+    ]
+    tta_scales = [
+        (int(img_w * 0.9), int(img_h * 0.9)),
+        (int(img_w), int(img_h)),
+        (int(img_w * 1.1), int(img_h * 1.1)),
+    ]
+
     train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
+        {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
+        {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
@@ -525,10 +536,40 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "LoadAnnotations", "with_bbox": True},
         {
             "type": "PackDetInputs",
             "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor"),
+        },
+    ]
+    tta_pipeline = [
+        {"type": "LoadImageFromFile"},
+        {
+            "type": "TestTimeAug",
+            "transforms": [
+                [
+                    {"type": "Resize", "scale": tta_scales[0], "keep_ratio": True},
+                    {"type": "Resize", "scale": tta_scales[1], "keep_ratio": True},
+                    {"type": "Resize", "scale": tta_scales[2], "keep_ratio": True},
+                ],
+                [
+                    {"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
+                    {"type": "RandomFlip", "prob": 1.0, "direction": "horizontal"},
+                ],
+                [
+                    {
+                        "type": "PackDetInputs",
+                        "meta_keys": (
+                            "img_id",
+                            "img_path",
+                            "ori_shape",
+                            "img_shape",
+                            "scale_factor",
+                            "flip",
+                            "flip_direction",
+                        ),
+                    }
+                ],
+            ],
         },
     ]
 
@@ -550,12 +591,13 @@ def _build_mmdet_cfg(
             "lr": float(cfg.train.learning_rate),
             "weight_decay": float(cfg.train.weight_decay),
         },
-        "paramwise_cfg": {
+    }
+    if cfg.model.architecture in {CASCADE_ARCH_SWIN_L, CASCADE_ARCH_CONVNEXT_XL}:
+        optim_wrapper["paramwise_cfg"] = {
             "decay_rate": 0.9,
             "decay_type": "layer_wise",
             "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
-        },
-    }
+        }
     if cfg.train.use_amp:
         print("[cascade] AMP requested, but disabled for MMDet Cascade stability.")
     if cfg.train.grad_clip_norm is not None:
@@ -575,6 +617,14 @@ def _build_mmdet_cfg(
         },
         "work_dir": str(work_dir),
         "model": model,
+        "tta_model": {
+            "type": "DetTTAModel",
+            "tta_cfg": {
+                "nms": {"type": "nms", "iou_threshold": 0.5},
+                "max_per_img": int(cfg.model.detections_per_img),
+            },
+        },
+        "tta_pipeline": tta_pipeline,
         "train_dataloader": {
             "batch_size": int(cfg.train.batch_size),
             "num_workers": int(cfg.train.num_workers),
@@ -673,8 +723,8 @@ def _build_mmdet_cfg(
         "load_from": None,
         "resume": False,
         "auto_scale_lr": {
-            "enable": True,
-            "base_batch_size": 16  # Asumimos que 1e-4 es tu LR ideal para un batch total de 16
+            "enable": False,
+            "base_batch_size": 4,
         },
     }
 

@@ -97,7 +97,7 @@ cascade_rcnn_resnet101
 cascade_rcnn_resnet50
 
 # DCNv2 (recomendado para objetos deformables/alargados)
-/usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
+/usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 --epochs 25 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 1e-3
 
 # Swin-L (muy fuerte, pesado)
 /usr/bin/python -m src.train --arch cascade_rcnn_swin_l --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 3e-4
