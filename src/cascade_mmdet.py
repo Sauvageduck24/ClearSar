@@ -390,30 +390,21 @@ def _build_mmdet_cfg(
         "pipeline": train_pipeline,
     }
 
-    # NOTE:
-    # In some mmcv/mmdet/torch combinations, RPN NMS can fail under autocast with:
-    # "Index put requires the source and destination dtypes match".
-    # We keep Cascade MMDet in fp32 for stability.
-    use_mmdet_amp = bool(cfg.train.use_amp)
-    if cfg.train.use_amp:
-        print("[cascade] AMP enabled for MMDet.")
-
-    optim_wrapper_type = "AmpOptimWrapper" if use_mmdet_amp else "OptimWrapper"
     optim_wrapper: Dict[str, Any] = {
-        "type": optim_wrapper_type,
+        "type": "OptimWrapper",
         "optimizer": {
             "type": "AdamW",
             "lr": float(cfg.train.learning_rate),
             "weight_decay": float(cfg.train.weight_decay),
         },
         "paramwise_cfg": {
-            "decay_rate": 0.8,
+            "decay_rate": 0.9,
             "decay_type": "layer_wise",
             "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
         },
     }
-    if use_mmdet_amp:
-        optim_wrapper["dtype"] = "float16"
+    if cfg.train.use_amp:
+        print("[cascade] AMP requested, but disabled for MMDet Cascade stability.")
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
             "max_norm": float(cfg.train.grad_clip_norm),

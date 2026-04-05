@@ -38,7 +38,7 @@ class TrainConfig:
     epochs: int = 12
     batch_size: int = 4
     learning_rate: float = 1e-4
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-3
     momentum: float = 0.9
     lr_step_size: int = 10
     lr_gamma: float = 0.5
