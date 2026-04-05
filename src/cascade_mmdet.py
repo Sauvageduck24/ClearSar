@@ -391,10 +391,17 @@ def _build_mmdet_cfg(
     }
 
     # NOTE:
-    # bf16 autocast can break mmcv batched_nms in some stacks due to dtype
-    # mismatch (scores buffer in bf16 vs nms output in fp32). Prefer fp16 when
-    # AMP is enabled and allow fully-fp32 fallback with cfg.train.use_amp=False.
-    optim_wrapper_type = "AmpOptimWrapper" if cfg.train.use_amp else "OptimWrapper"
+    # In some mmcv/mmdet/torch combinations, RPN NMS can fail under autocast with:
+    # "Index put requires the source and destination dtypes match".
+    # We keep Cascade MMDet in fp32 for stability.
+    use_mmdet_amp = False
+    if cfg.train.use_amp:
+        print(
+            "[cascade] AMP requested but disabled for MMDet due to a known "
+            "mmcv batched_nms dtype mismatch issue. Falling back to fp32."
+        )
+
+    optim_wrapper_type = "AmpOptimWrapper" if use_mmdet_amp else "OptimWrapper"
     optim_wrapper: Dict[str, Any] = {
         "type": optim_wrapper_type,
         "optimizer": {
@@ -408,7 +415,7 @@ def _build_mmdet_cfg(
             "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
         },
     }
-    if cfg.train.use_amp:
+    if use_mmdet_amp:
         optim_wrapper["dtype"] = "float16"
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
