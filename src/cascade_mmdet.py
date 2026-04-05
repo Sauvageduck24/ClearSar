@@ -392,6 +392,7 @@ def _build_mmdet_cfg(
 
     optim_wrapper: Dict[str, Any] = {
         "type": "AmpOptimWrapper",
+        "dtype": "bfloat16",
         "optimizer": {
             "type": "AdamW",
             "lr": float(cfg.train.learning_rate),
