@@ -413,7 +413,7 @@ def _build_mmdet_cfg(
         },
     }
     if use_mmdet_amp:
-        optim_wrapper["dtype"] = "float16"
+        optim_wrapper["dtype"] = "bfloat16"
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
             "max_norm": float(cfg.train.grad_clip_norm),
