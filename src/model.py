@@ -125,7 +125,14 @@ def build_model(cfg: ModelConfig, device: Optional[torch.device] = None) -> nn.M
         model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(
             weights=cfg.pretrained_weights,
         )
-    elif cfg.architecture in {"cascade_rcnn_swin_l", "cascade_rcnn_convnext_xl"}:
+    elif cfg.architecture in {
+        "cascade_rcnn_swin_l",
+        "cascade_rcnn_convnext_xl",
+        "cascade_rcnn_resnet50",
+        "cascade_rcnn_resnet101",
+        "cascade_rcnn_dcnv2",
+        "cascade_rcnn_hrnet",
+    }:
         raise ValueError(
             "Cascade architectures are trained via MMDetection path in src.train. "
             "Run: python -m src.train --arch "
@@ -135,7 +142,9 @@ def build_model(cfg: ModelConfig, device: Optional[torch.device] = None) -> nn.M
         raise ValueError(
             "Unsupported architecture. Use 'fasterrcnn_resnet50_fpn_v2', "
             "'fasterrcnn_mobilenet_v3_large_fpn', 'cascade_rcnn_swin_l', or "
-            "'cascade_rcnn_convnext_xl'."
+            "'cascade_rcnn_convnext_xl', 'cascade_rcnn_resnet50', or "
+            "'cascade_rcnn_resnet101', 'cascade_rcnn_dcnv2', or "
+            "'cascade_rcnn_hrnet'."
         )
 
     _configure_rpn_for_small_objects(model)

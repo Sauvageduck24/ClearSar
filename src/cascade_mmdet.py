@@ -12,7 +12,18 @@ from src.dataset import split_train_val_image_ids
 
 CASCADE_ARCH_SWIN_L = "cascade_rcnn_swin_l"
 CASCADE_ARCH_CONVNEXT_XL = "cascade_rcnn_convnext_xl"
-CASCADE_ARCHITECTURES = {CASCADE_ARCH_SWIN_L, CASCADE_ARCH_CONVNEXT_XL}
+CASCADE_ARCH_RESNET50 = "cascade_rcnn_resnet50"
+CASCADE_ARCH_RESNET101 = "cascade_rcnn_resnet101"
+CASCADE_ARCH_DCNV2 = "cascade_rcnn_dcnv2"
+CASCADE_ARCH_HRNET = "cascade_rcnn_hrnet"
+CASCADE_ARCHITECTURES = {
+    CASCADE_ARCH_SWIN_L,
+    CASCADE_ARCH_CONVNEXT_XL,
+    CASCADE_ARCH_RESNET50,
+    CASCADE_ARCH_RESNET101,
+    CASCADE_ARCH_DCNV2,
+    CASCADE_ARCH_HRNET,
+}
 
 
 def is_cascade_architecture(architecture: str) -> bool:
@@ -68,7 +79,35 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
     return tuple(uniq)
 
 
-def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
+    token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
+    if token and token.upper() != "DEFAULT":
+        return token
+
+    if arch == CASCADE_ARCH_SWIN_L:
+        return "https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_large_patch4_window12_384_22k.pth"
+
+    if arch == CASCADE_ARCH_CONVNEXT_XL:
+        return "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_in21k_20220124-f909bad7.pth"
+
+    if arch == CASCADE_ARCH_RESNET50:
+        return "torchvision://resnet50"
+
+    if arch == CASCADE_ARCH_RESNET101:
+        return "torchvision://resnet101"
+
+    if arch == CASCADE_ARCH_DCNV2:
+        return "torchvision://resnet50"
+
+    if arch == CASCADE_ARCH_HRNET:
+        return "open-mmlab://msra/hrnetv2_w40"
+
+    raise ValueError(f"Unsupported Cascade architecture: {arch}")
+
+
+def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    pretrained_ckpt = _resolve_pretrained_checkpoint(arch, pretrained_weights)
+
     if arch == CASCADE_ARCH_SWIN_L:
         backbone = {
             "type": "SwinTransformer",
@@ -83,7 +122,10 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "out_indices": (0, 1, 2, 3),
             "with_cp": False,
             "convert_weights": True,
-            "init_cfg": None,
+            "init_cfg": {
+                "type": "Pretrained",
+                "checkpoint": pretrained_ckpt,
+            },
         }
         neck = {
             "type": "FPN",
@@ -104,13 +146,108 @@ def _build_backbone_and_neck(arch: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
             "gap_before_final_norm": False,
             "init_cfg": {
                 "type": "Pretrained",
-                "checkpoint": "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_in21k_20220124-f909bad7.pth",
+                "checkpoint": pretrained_ckpt,
                 "prefix": "backbone",
             },
         }
         neck = {
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
+            "out_channels": 256,
+            "num_outs": 5,
+        }
+        return backbone, neck
+
+    if arch in {CASCADE_ARCH_RESNET50, CASCADE_ARCH_RESNET101}:
+        depth = 50 if arch == CASCADE_ARCH_RESNET50 else 101
+        backbone = {
+            "type": "ResNet",
+            "depth": depth,
+            "num_stages": 4,
+            "out_indices": (0, 1, 2, 3),
+            "frozen_stages": 1,
+            "norm_cfg": {"type": "BN", "requires_grad": True},
+            "norm_eval": True,
+            "style": "pytorch",
+            "init_cfg": {
+                "type": "Pretrained",
+                "checkpoint": pretrained_ckpt,
+            },
+        }
+        neck = {
+            "type": "FPN",
+            "in_channels": [256, 512, 1024, 2048],
+            "out_channels": 256,
+            "num_outs": 5,
+        }
+        return backbone, neck
+
+    if arch == CASCADE_ARCH_DCNV2:
+        backbone = {
+            "type": "ResNet",
+            "depth": 50,
+            "num_stages": 4,
+            "out_indices": (0, 1, 2, 3),
+            "frozen_stages": 1,
+            "norm_cfg": {"type": "BN", "requires_grad": True},
+            "norm_eval": True,
+            "style": "pytorch",
+            "dcn": {"type": "DCNv2", "deform_groups": 1, "fallback_on_stride": False},
+            "stage_with_dcn": (False, True, True, True),
+            "init_cfg": {
+                "type": "Pretrained",
+                "checkpoint": pretrained_ckpt,
+            },
+        }
+        neck = {
+            "type": "FPN",
+            "in_channels": [256, 512, 1024, 2048],
+            "out_channels": 256,
+            "num_outs": 5,
+        }
+        return backbone, neck
+
+    if arch == CASCADE_ARCH_HRNET:
+        backbone = {
+            "type": "HRNet",
+            "extra": {
+                "stage1": {
+                    "num_modules": 1,
+                    "num_branches": 1,
+                    "block": "BOTTLENECK",
+                    "num_blocks": (4,),
+                    "num_channels": (64,),
+                },
+                "stage2": {
+                    "num_modules": 1,
+                    "num_branches": 2,
+                    "block": "BASIC",
+                    "num_blocks": (4, 4),
+                    "num_channels": (40, 80),
+                },
+                "stage3": {
+                    "num_modules": 4,
+                    "num_branches": 3,
+                    "block": "BASIC",
+                    "num_blocks": (4, 4, 4),
+                    "num_channels": (40, 80, 160),
+                },
+                "stage4": {
+                    "num_modules": 3,
+                    "num_branches": 4,
+                    "block": "BASIC",
+                    "num_blocks": (4, 4, 4, 4),
+                    "num_channels": (40, 80, 160, 320),
+                },
+            },
+            "init_cfg": {
+                "type": "Pretrained",
+                "checkpoint": pretrained_ckpt,
+            },
+        }
+        neck = {
+            "type": "HRFPN",
+            "in_channels": [40, 80, 160, 320],
             "out_channels": 256,
             "num_outs": 5,
         }
@@ -131,7 +268,7 @@ def _build_mmdet_cfg(
     else:
         img_h, img_w = cfg.train.image_size
 
-    backbone, neck = _build_backbone_and_neck(cfg.model.architecture)
+    backbone, neck = _build_backbone_and_neck(cfg.model.architecture, cfg.model.pretrained_weights)
 
     # Dataset statistics show tiny boxes and extreme aspect ratios; use aggressive
     # anchor ratios and small scales to increase recall on thin artifacts.
@@ -249,7 +386,7 @@ def _build_mmdet_cfg(
             "rpn": {
                 "assigner": {
                     "type": "MaxIoUAssigner",
-                    "pos_iou_thr": 0.6,
+                    "pos_iou_thr": 0.5,
                     "neg_iou_thr": 0.3,
                     "min_pos_iou": 0.3,
                     "match_low_quality": True,
@@ -356,7 +493,6 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
-        {"type": "RandomCrop", "crop_size": (0.8, 0.8), "crop_type": "relative_range"},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,

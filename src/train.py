@@ -47,6 +47,10 @@ def parse_args() -> argparse.Namespace:
             "fasterrcnn_mobilenet_v3_large_fpn",
             "cascade_rcnn_swin_l",
             "cascade_rcnn_convnext_xl",
+            "cascade_rcnn_resnet50",
+            "cascade_rcnn_resnet101",
+            "cascade_rcnn_dcnv2",
+            "cascade_rcnn_hrnet",
         ],
         default=None,
     )

@@ -24,6 +24,10 @@ class ModelConfig:
     # - fasterrcnn_mobilenet_v3_large_fpn
     # - cascade_rcnn_swin_l
     # - cascade_rcnn_convnext_xl
+    # - cascade_rcnn_resnet50
+    # - cascade_rcnn_resnet101
+    # - cascade_rcnn_dcnv2
+    # - cascade_rcnn_hrnet
     pretrained_weights: str = "DEFAULT"
     num_classes: int = 2  # background + RFI
     score_thresh: float = 0.001
