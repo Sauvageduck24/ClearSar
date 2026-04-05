@@ -397,6 +397,11 @@ def _build_mmdet_cfg(
             "lr": float(cfg.train.learning_rate),
             "weight_decay": float(cfg.train.weight_decay),
         },
+        "paramwise_cfg": {
+            "decay_rate": 0.8,
+            "decay_type": "layer_wise",
+            "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
+        },
     }
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
