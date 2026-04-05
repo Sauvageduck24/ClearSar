@@ -391,7 +391,7 @@ def _build_mmdet_cfg(
     }
 
     optim_wrapper: Dict[str, Any] = {
-        "type": "OptimWrapper",
+        "type": "AmpOptimWrapper",
         "optimizer": {
             "type": "AdamW",
             "lr": float(cfg.train.learning_rate),
@@ -509,7 +509,7 @@ def _build_mmdet_cfg(
             "visualization": {"type": "DetVisualizationHook"},
         },
         "env_cfg": {
-            "cudnn_benchmark": False,
+            "cudnn_benchmark": True,
             "mp_cfg": {"mp_start_method": mp_start_method, "opencv_num_threads": 0},
             "dist_cfg": {"backend": dist_backend},
         },
