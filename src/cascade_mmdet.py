@@ -354,7 +354,7 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {
             "type": "RandomChoiceResize",
-            "scales": [(384, 384), (448, 448), (512, 512), (640, 640), (768, 768)],
+            "scales": [(384, 384), (448, 448), (512, 512), (640, 640), (768, 768),(1024, 1024)],
             "keep_ratio": True,
         },
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal", "vertical"]},
