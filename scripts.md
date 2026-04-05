@@ -89,11 +89,30 @@ diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
 
 # Cascade r cnn 
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 16 --num-workers 32 --image-size 512 --save-top-k 1 --lr 1e-3
+cascade_rcnn_dcnv2
+cascade_rcnn_swin_l
+cascade_rcnn_hrnet
+cascade_rcnn_convnext_xl
+cascade_rcnn_resnet101
+cascade_rcnn_resnet50
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 12 --num-workers 32 --image-size 768 --save-top-k 1 --lr 1e-3
+# DCNv2 (recomendado para objetos deformables/alargados)
+/usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
 
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 6 --num-workers 32 --image-size 1024 --save-top-k 1 --lr 1e-3
+# Swin-L (muy fuerte, pesado)
+/usr/bin/python -m src.train --arch cascade_rcnn_swin_l --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 3e-4
+
+# HRNet (muy bueno en detalle espacial)
+/usr/bin/python -m src.train --arch cascade_rcnn_hrnet --epochs 15 --batch-size 10 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
+
+# ConvNeXt-XL (tu baseline actual)
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 3e-4
+
+# ResNet-101 (baseline robusto)
+/usr/bin/python -m src.train --arch cascade_rcnn_resnet101 --epochs 15 --batch-size 12 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
+
+# ResNet-50 (rápido para comparar)
+/usr/bin/python -m src.train --arch cascade_rcnn_resnet50 --epochs 15 --batch-size 16 --num-workers 32 --image-size 512 --save-top-k 1 --lr 1e-3
 
 # ENSEMBLE
 
