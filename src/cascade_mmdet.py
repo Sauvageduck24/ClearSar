@@ -390,9 +390,13 @@ def _build_mmdet_cfg(
         "pipeline": train_pipeline,
     }
 
+    # NOTE:
+    # bf16 autocast can break mmcv batched_nms in some stacks due to dtype
+    # mismatch (scores buffer in bf16 vs nms output in fp32). Prefer fp16 when
+    # AMP is enabled and allow fully-fp32 fallback with cfg.train.use_amp=False.
+    optim_wrapper_type = "AmpOptimWrapper" if cfg.train.use_amp else "OptimWrapper"
     optim_wrapper: Dict[str, Any] = {
-        "type": "AmpOptimWrapper",
-        "dtype": "bfloat16",
+        "type": optim_wrapper_type,
         "optimizer": {
             "type": "AdamW",
             "lr": float(cfg.train.learning_rate),
@@ -404,6 +408,8 @@ def _build_mmdet_cfg(
             "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
         },
     }
+    if cfg.train.use_amp:
+        optim_wrapper["dtype"] = "float16"
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
             "max_norm": float(cfg.train.grad_clip_norm),
