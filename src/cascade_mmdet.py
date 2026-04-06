@@ -45,7 +45,6 @@ def _subset_coco(coco: Dict[str, Any], image_ids: Iterable[int]) -> Dict[str, An
     wanted = {int(x) for x in image_ids}
     images = [img for img in coco.get("images", []) if int(img.get("id", -1)) in wanted]
     anns = [ann for ann in coco.get("annotations", []) if int(ann.get("image_id", -1)) in wanted]
-
     subset: Dict[str, Any] = {
         "images": images,
         "annotations": anns,
@@ -62,7 +61,6 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
     categories = coco.get("categories", [])
     if not isinstance(categories, list):
         return ("rfi",)
-
     names: List[str] = []
     for cat in categories:
         if not isinstance(cat, dict):
@@ -70,62 +68,29 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
         raw_name = cat.get("name")
         if isinstance(raw_name, str) and raw_name.strip():
             names.append(raw_name.strip())
-
     if not names:
         return ("rfi",)
-
-    uniq = list(dict.fromkeys(names))
-    return tuple(uniq)
-
-
-def _coco_has_instance_masks(coco: Dict[str, Any]) -> bool:
-    annotations = coco.get("annotations", [])
-    if not isinstance(annotations, list):
-        return False
-
-    for ann in annotations:
-        if not isinstance(ann, dict):
-            continue
-        seg = ann.get("segmentation")
-        if isinstance(seg, list) and len(seg) > 0:
-            return True
-        if isinstance(seg, dict):
-            counts = seg.get("counts")
-            size = seg.get("size")
-            if counts is not None and isinstance(size, list) and len(size) == 2:
-                return True
-    return False
+    return tuple(dict.fromkeys(names))
 
 
 def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
     images = coco.get("images", [])
     annotations = coco.get("annotations", [])
     if not isinstance(images, list) or not isinstance(annotations, list):
-        return {
-            "num_boxes": 0.0,
-            "small_ratio": 0.0,
-            "elongated_ratio": 0.0,
-            "large_ratio": 0.0,
-        }
+        return {"num_boxes": 0.0, "small_ratio": 0.0, "elongated_ratio": 0.0, "large_ratio": 0.0}
 
     image_area_by_id: Dict[int, float] = {}
     for img in images:
         if not isinstance(img, dict):
             continue
         img_id = img.get("id")
-        w = img.get("width")
-        h = img.get("height")
+        w, h = img.get("width"), img.get("height")
         if img_id is None:
             continue
         try:
-            img_id_i = int(img_id)
-            w_f = float(w)
-            h_f = float(h)
+            image_area_by_id[int(img_id)] = float(w) * float(h)
         except (TypeError, ValueError):
             continue
-        if w_f <= 0 or h_f <= 0:
-            continue
-        image_area_by_id[img_id_i] = w_f * h_f
 
     rel_areas: List[float] = []
     elongations: List[float] = []
@@ -137,100 +102,80 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
         if not isinstance(bbox, list) or len(bbox) < 4:
             continue
         try:
-            bw = float(bbox[2])
-            bh = float(bbox[3])
+            bw, bh = float(bbox[2]), float(bbox[3])
             img_id = int(ann.get("image_id"))
         except (TypeError, ValueError):
             continue
         if bw <= 0 or bh <= 0:
             continue
-
         img_area = image_area_by_id.get(img_id)
-        if img_area is None or img_area <= 0:
+        if not img_area:
             continue
-
-        rel_area = (bw * bh) / img_area
-        long_short = max(bw / bh, bh / bw)
-
-        rel_areas.append(rel_area)
-        elongations.append(long_short)
+        rel_areas.append((bw * bh) / img_area)
+        elongations.append(max(bw / bh, bh / bw))
 
     num_boxes = len(rel_areas)
-
     if num_boxes == 0:
-        return {
-            "num_boxes": 0.0,
-            "small_ratio": 0.0,
-            "elongated_ratio": 0.0,
-            "large_ratio": 0.0,
-            "small_thr": 0.0,
-            "large_thr": 0.0,
-            "elongated_thr": 0.0,
-        }
+        return {"num_boxes": 0.0, "small_ratio": 0.0, "elongated_ratio": 0.0, "large_ratio": 0.0,
+                "small_thr": 0.0, "large_thr": 0.0, "elongated_thr": 0.0}
 
-    def _quantile(values: List[float], q: float) -> float:
-        s = sorted(values)
-        idx = int((len(s) - 1) * max(0.0, min(1.0, q)))
-        return float(s[idx])
+    def _q(vals: List[float], q: float) -> float:
+        s = sorted(vals)
+        return float(s[int((len(s) - 1) * max(0.0, min(1.0, q)))])
 
-    # Umbrales adaptativos robustos al dataset:
-    # - small: percentil 35 de area relativa (aprox tercio inferior)
-    # - large: percentil 95 de area relativa (cola superior)
-    # - elongated: percentil 50 de elongacion, acotado para no sobreadaptar
-    small_thr = _quantile(rel_areas, 0.35)
-    large_thr = _quantile(rel_areas, 0.95)
-    elongated_thr = min(12.0, max(6.0, _quantile(elongations, 0.50)))
+    small_thr = _q(rel_areas, 0.35)
+    large_thr = _q(rel_areas, 0.95)
+    elongated_thr = min(12.0, max(6.0, _q(elongations, 0.50)))
 
-    small = sum(1 for x in rel_areas if x <= small_thr)
-    elongated = sum(1 for x in elongations if x >= elongated_thr)
-    large = sum(1 for x in rel_areas if x >= large_thr)
-
-    denom = float(num_boxes)
     return {
         "num_boxes": float(num_boxes),
-        "small_ratio": small / denom,
-        "elongated_ratio": elongated / denom,
-        "large_ratio": large / denom,
+        "small_ratio": sum(1 for x in rel_areas if x <= small_thr) / num_boxes,
+        "elongated_ratio": sum(1 for x in elongations if x >= elongated_thr) / num_boxes,
+        "large_ratio": sum(1 for x in rel_areas if x >= large_thr) / num_boxes,
         "small_thr": small_thr,
         "large_thr": large_thr,
         "elongated_thr": elongated_thr,
     }
 
 
-def _build_adaptive_bbox_losses(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]], str]:
+def _build_adaptive_bbox_losses(
+    coco: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]], str]:
     stats = _analyze_bbox_distribution(coco)
     small_ratio = float(stats.get("small_ratio", 0.0))
     elongated_ratio = float(stats.get("elongated_ratio", 0.0))
     large_ratio = float(stats.get("large_ratio", 0.0))
-    small_thr = float(stats.get("small_thr", 0.0))
-    large_thr = float(stats.get("large_thr", 0.0))
-    elongated_thr = float(stats.get("elongated_thr", 0.0))
 
-    # Ajuste automático suave: más peso cuando predominan cajas pequeñas/elongadas/grandes.
-    rpn_weight = min(20.0, 8.0 + 8.0 * small_ratio + 6.0 * elongated_ratio + 4.0 * large_ratio)
-    stage1_weight = min(20.0, 8.0 + 10.0 * small_ratio + 6.0 * elongated_ratio)
-    stage2_weight = min(20.0, 8.0 + 6.0 * small_ratio + 8.0 * elongated_ratio + 4.0 * large_ratio)
-    stage3_weight = min(8.0, 1.5 + 2.0 * elongated_ratio + 3.0 * large_ratio)
-
+    # FIX: RPN loss must be SmoothL1 — RPNHead predicts deltas (dx,dy,dw,dh), not decoded boxes.
+    # GIoULoss/CIoULoss require absolute coordinates (reg_decoded_bbox=True) which RPNHead
+    # does NOT support. Using them here causes NaN gradients or a runtime error.
     rpn_loss_bbox: Dict[str, Any] = {
-        "type": "GIoULoss",
-        "loss_weight": round(rpn_weight, 4),
+        "type": "SmoothL1Loss",
+        "loss_weight": 1.0,
+        "beta": 1.0 / 9.0,
     }
 
-    stage3_loss_type = "CIoULoss" if elongated_ratio >= 0.2 else "GIoULoss"
+    # FIX: loss_weight capped at 5.0 for RoI stages.
+    # The previous formula produced weights of ~16 with elongated_ratio~0.80 (real value
+    # for this dataset). That's 16x the cls_loss weight=1.0, which makes the model ignore
+    # classification entirely — exactly the stagnation pattern observed in training.
+    # Literature standard: 1.0–2.0, practical competition max: ~5.0.
+    stage_loss_type = "CIoULoss" if elongated_ratio >= 0.20 else "GIoULoss"
+    stage1_weight = round(min(5.0, 1.5 + 1.5 * small_ratio + 1.0 * elongated_ratio), 4)
+    stage2_weight = round(min(5.0, 1.5 + 1.0 * small_ratio + 1.5 * elongated_ratio), 4)
+    stage3_weight = round(min(4.0, 1.0 + 0.5 * elongated_ratio + 1.0 * large_ratio), 4)
+
     roi_stage_losses = (
-        {"type": "CIoULoss", "loss_weight": round(stage1_weight, 4)},
-        {"type": "CIoULoss", "loss_weight": round(stage2_weight, 4)},
-        {"type": stage3_loss_type, "loss_weight": round(stage3_weight, 4)},
+        {"type": stage_loss_type, "loss_weight": stage1_weight},
+        {"type": stage_loss_type, "loss_weight": stage2_weight},
+        {"type": stage_loss_type, "loss_weight": stage3_weight},
     )
 
     summary = (
-        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f}, "
-        f"thr_small={small_thr:.6f}, thr_elong={elongated_thr:.2f}, thr_large={large_thr:.6f}, "
-        f"rpn={rpn_loss_bbox['type']}@{rpn_loss_bbox['loss_weight']:.3f}, "
-        f"roi=[{roi_stage_losses[0]['type']}@{roi_stage_losses[0]['loss_weight']:.3f}, "
-        f"{roi_stage_losses[1]['type']}@{roi_stage_losses[1]['loss_weight']:.3f}, "
-        f"{roi_stage_losses[2]['type']}@{roi_stage_losses[2]['loss_weight']:.3f}]"
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f} | "
+        f"rpn=SmoothL1@1.0 | "
+        f"roi=[{stage_loss_type}@{stage1_weight}, {stage_loss_type}@{stage2_weight}, "
+        f"{stage_loss_type}@{stage3_weight}]"
     )
     return rpn_loss_bbox, roi_stage_losses, summary
 
@@ -241,8 +186,6 @@ def _build_adaptive_rcnn_iou_thresholds(coco: Dict[str, Any]) -> Tuple[Tuple[flo
     elongated_ratio = float(stats.get("elongated_ratio", 0.0))
     large_ratio = float(stats.get("large_ratio", 0.0))
 
-    # Si predominan small/elongated, relajamos IoU para mejorar recall de positivos.
-    # Si sube la proporcion de cajas grandes, recuperamos un poco de rigor para precision.
     relax = min(0.10, 0.06 * small_ratio + 0.05 * elongated_ratio)
     tighten = min(0.03, 0.05 * large_ratio)
 
@@ -252,7 +195,7 @@ def _build_adaptive_rcnn_iou_thresholds(coco: Dict[str, Any]) -> Tuple[Tuple[flo
 
     thresholds = (round(stage1, 3), round(stage2, 3), round(stage3, 3))
     summary = (
-        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f}, "
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f} | "
         f"rcnn_iou={thresholds}"
     )
     return thresholds, summary
@@ -261,31 +204,21 @@ def _build_adaptive_rcnn_iou_thresholds(coco: Dict[str, Any]) -> Tuple[Tuple[flo
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
     if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
-        raise ValueError(
-            "All Cascade backbones require pretrained weights. "
-            f"Invalid pretrained_weights='{token}'."
-        )
+        raise ValueError(f"All Cascade backbones require pretrained weights. Invalid: '{token}'.")
     if token and token.upper() != "DEFAULT":
         return token
-
     if arch == CASCADE_ARCH_SWIN_L:
         return "https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_large_patch4_window12_384_22k.pth"
-
     if arch == CASCADE_ARCH_CONVNEXT_XL:
         return "https://download.openmmlab.com/mmclassification/v0/convnext/convnext-xlarge_3rdparty_in21k_20220124-f909bad7.pth"
-
     if arch == CASCADE_ARCH_RESNET50:
         return "torchvision://resnet50"
-
     if arch == CASCADE_ARCH_RESNET101:
         return "torchvision://resnet101"
-
     if arch == CASCADE_ARCH_DCNV2:
         return "torchvision://resnet50"
-
     if arch == CASCADE_ARCH_HRNET:
         return "open-mmlab://msra/hrnetv2_w40"
-
     raise ValueError(f"Unsupported Cascade architecture: {arch}")
 
 
@@ -293,7 +226,6 @@ def _ensure_pretrained_backbone(arch: str, backbone: Dict[str, Any]) -> None:
     init_cfg = backbone.get("init_cfg") if isinstance(backbone, dict) else None
     if not isinstance(init_cfg, dict):
         raise ValueError(f"{arch} backbone is missing init_cfg for pretrained weights.")
-
     checkpoint = init_cfg.get("checkpoint")
     if init_cfg.get("type") != "Pretrained" or not isinstance(checkpoint, str) or not checkpoint.strip():
         raise ValueError(f"{arch} backbone must define a non-empty pretrained checkpoint.")
@@ -303,16 +235,12 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
     pretrained_ckpt = _resolve_pretrained_checkpoint(arch, pretrained_weights)
 
     if arch == CASCADE_ARCH_SWIN_L:
-        # FIX: window_size=12 was pretrained at 384px.
-        # At 512px input the stage-1 feature map is 512/4=128px.
-        # 128 % 12 != 0 → broken positional encoding, silent degradation.
-        # window_size=16 → 128/16=8 ✓  (or 8 → 128/8=16 ✓)
         backbone = {
             "type": "SwinTransformer",
             "embed_dims": 192,
             "depths": [2, 2, 18, 2],
             "num_heads": [6, 12, 24, 48],
-            "window_size": 16,           # FIX: was 12, must divide 128 evenly at 512px input
+            "window_size": 16,  # 512px → stage1 feature=128px; 128/16=8 ✓ (was 12, 128%12≠0)
             "mlp_ratio": 4,
             "qkv_bias": True,
             "drop_path_rate": 0.10,
@@ -320,20 +248,11 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "out_indices": (0, 1, 2, 3),
             "with_cp": False,
             "convert_weights": True,
-            "init_cfg": {
-                "type": "Pretrained",
-                "checkpoint": pretrained_ckpt,
-            },
+            "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        # FIX: Swin-L outputs at strides [4, 8, 16, 32].
-        # num_outs=5 → FPN adds one extra coarse level → output strides [4, 8, 16, 32, 64].
-        # AnchorGenerator and RoI extractor are set accordingly below.
-        neck = {
-            "type": "PAFPN",
-            "in_channels": [192, 384, 768, 1536],
-            "out_channels": 256,
-            "num_outs": 5,               # FIX: was 6; 5 levels → strides [4,8,16,32,64]
-        }
+        # FPN (not PAFPN): PAFPN adds a second bottom-up pass, ~30-40% slower per epoch
+        # with marginal benefit for ~514px images. FPN is the right speed/quality trade-off.
+        neck = {"type": "FPN", "in_channels": [192, 384, 768, 1536], "out_channels": 256, "num_outs": 5}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -345,69 +264,36 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "drop_path_rate": 0.10,
             "layer_scale_init_value": 1.0,
             "gap_before_final_norm": False,
-            "init_cfg": {
-                "type": "Pretrained",
-                "checkpoint": pretrained_ckpt,
-                "prefix": "backbone",
-            },
+            "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt, "prefix": "backbone"},
         }
-        neck = {
-            "type": "PAFPN",
-            "in_channels": [256, 512, 1024, 2048],
-            "out_channels": 256,
-            "num_outs": 5,               # FIX: was 6
-        }
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch in {CASCADE_ARCH_RESNET50, CASCADE_ARCH_RESNET101}:
         depth = 50 if arch == CASCADE_ARCH_RESNET50 else 101
         backbone = {
-            "type": "ResNet",
-            "depth": depth,
-            "num_stages": 4,
-            "out_indices": (0, 1, 2, 3),
-            "frozen_stages": 1,
-            "norm_cfg": {"type": "BN", "requires_grad": True},
-            "norm_eval": True,
+            "type": "ResNet", "depth": depth, "num_stages": 4,
+            "out_indices": (0, 1, 2, 3), "frozen_stages": 1,
+            "norm_cfg": {"type": "BN", "requires_grad": True}, "norm_eval": True,
             "style": "pytorch",
-            "init_cfg": {
-                "type": "Pretrained",
-                "checkpoint": pretrained_ckpt,
-            },
+            "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {
-            "type": "PAFPN",
-            "in_channels": [256, 512, 1024, 2048],
-            "out_channels": 256,
-            "num_outs": 5,               # FIX: was 6
-        }
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch == CASCADE_ARCH_DCNV2:
         backbone = {
-            "type": "ResNet",
-            "depth": 50,
-            "num_stages": 4,
-            "out_indices": (0, 1, 2, 3),
-            "frozen_stages": 1,
-            "norm_cfg": {"type": "BN", "requires_grad": True},
-            "norm_eval": True,
+            "type": "ResNet", "depth": 50, "num_stages": 4,
+            "out_indices": (0, 1, 2, 3), "frozen_stages": 1,
+            "norm_cfg": {"type": "BN", "requires_grad": True}, "norm_eval": True,
             "style": "pytorch",
             "dcn": {"type": "DCNv2", "deform_groups": 1, "fallback_on_stride": False},
             "stage_with_dcn": (False, True, True, True),
-            "init_cfg": {
-                "type": "Pretrained",
-                "checkpoint": pretrained_ckpt,
-            },
+            "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {
-            "type": "PAFPN",
-            "in_channels": [256, 512, 1024, 2048],
-            "out_channels": 256,
-            "num_outs": 5,               # FIX: was 6
-        }
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -415,46 +301,18 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
         backbone = {
             "type": "HRNet",
             "extra": {
-                "stage1": {
-                    "num_modules": 1,
-                    "num_branches": 1,
-                    "block": "BOTTLENECK",
-                    "num_blocks": (4,),
-                    "num_channels": (64,),
-                },
-                "stage2": {
-                    "num_modules": 1,
-                    "num_branches": 2,
-                    "block": "BASIC",
-                    "num_blocks": (4, 4),
-                    "num_channels": (40, 80),
-                },
-                "stage3": {
-                    "num_modules": 4,
-                    "num_branches": 3,
-                    "block": "BASIC",
-                    "num_blocks": (4, 4, 4),
-                    "num_channels": (40, 80, 160),
-                },
-                "stage4": {
-                    "num_modules": 3,
-                    "num_branches": 4,
-                    "block": "BASIC",
-                    "num_blocks": (4, 4, 4, 4),
-                    "num_channels": (40, 80, 160, 320),
-                },
+                "stage1": {"num_modules": 1, "num_branches": 1, "block": "BOTTLENECK",
+                           "num_blocks": (4,), "num_channels": (64,)},
+                "stage2": {"num_modules": 1, "num_branches": 2, "block": "BASIC",
+                           "num_blocks": (4, 4), "num_channels": (40, 80)},
+                "stage3": {"num_modules": 4, "num_branches": 3, "block": "BASIC",
+                           "num_blocks": (4, 4, 4), "num_channels": (40, 80, 160)},
+                "stage4": {"num_modules": 3, "num_branches": 4, "block": "BASIC",
+                           "num_blocks": (4, 4, 4, 4), "num_channels": (40, 80, 160, 320)},
             },
-            "init_cfg": {
-                "type": "Pretrained",
-                "checkpoint": pretrained_ckpt,
-            },
+            "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {
-            "type": "PAFPN",
-            "in_channels": [40, 80, 160, 320],
-            "out_channels": 256,
-            "num_outs": 5,               # FIX: was 6
-        }
+        neck = {"type": "HRFPN", "in_channels": [40, 80, 160, 320], "out_channels": 256, "num_outs": 5}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -468,7 +326,6 @@ def _build_mmdet_cfg(
     val_ann_path: Path,
     work_dir: Path,
     class_names: Tuple[str, ...],
-    use_copy_paste: bool,
 ) -> Dict[str, Any]:
     if cfg.train.image_size is None:
         img_h, img_w = (1024, 1024)
@@ -480,18 +337,7 @@ def _build_mmdet_cfg(
     rpn_loss_bbox, roi_stage_losses, adaptive_loss_summary = _build_adaptive_bbox_losses(coco)
     rcnn_iou_thresholds, adaptive_rcnn_summary = _build_adaptive_rcnn_iou_thresholds(coco)
     stage1_iou, stage2_iou, stage3_iou = rcnn_iou_thresholds
-    small_ratio = float(bbox_stats.get("small_ratio", 0.0))
     elongated_ratio = float(bbox_stats.get("elongated_ratio", 0.0))
-
-    # Evita colapso a "todo fondo" cuando hay muchas cajas muy delgadas.
-    use_random_crop = not (elongated_ratio >= 0.40)
-    # Aumentar topk agresivamente si hay muchas elongadas para garantizar positivos RPN
-    if elongated_ratio >= 0.50:
-        rpn_atss_topk = 25
-    elif elongated_ratio >= 0.40:
-        rpn_atss_topk = 20
-    else:
-        rpn_atss_topk = 12
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
@@ -513,11 +359,12 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [2, 4, 8],
+                # Removed scale=2: generates 8px base anchors which at ratio=0.05
+                # produce ~1.8×35px — too small to be useful, just adds false negatives.
+                "scales": [4, 8],
                 "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 33.0, 50.0],
-                # FIX: was [2, 4, 8, 16, 32, 64] — stride 2 doesn't exist in FPN output
-                # (ResNet/ConvNeXt/Swin all output finest at stride 4).
-                # 5 strides must match num_outs=5 in FPN above.
+                # 5 strides matching FPN num_outs=5.
+                # Backbone outputs [4,8,16,32]; FPN adds one coarse level → [4,8,16,32,64].
                 "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
@@ -526,7 +373,7 @@ def _build_mmdet_cfg(
                 "target_stds": [1.0, 1.0, 1.0, 1.0],
             },
             "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": True, "loss_weight": 1.0},
-            "loss_bbox": rpn_loss_bbox,
+            "loss_bbox": rpn_loss_bbox,  # SmoothL1 — see _build_adaptive_bbox_losses
         },
         "roi_head": {
             "type": "CascadeRoIHead",
@@ -534,78 +381,48 @@ def _build_mmdet_cfg(
             "stage_loss_weights": [1.0, 1.0, 1.0],
             "bbox_roi_extractor": {
                 "type": "SingleRoIExtractor",
-                "roi_layer": {
-                    "type": "RoIAlign",
-                    "output_size": (14, 14),
-                    "sampling_ratio": 2,
-                },
+                "roi_layer": {"type": "RoIAlign", "output_size": (14, 14), "sampling_ratio": 2},
                 "out_channels": 256,
-                # FIX: was [2, 4, 8, 16, 32] — must match actual FPN output strides.
-                # With num_outs=5 and ResNet backbone: FPN outputs at [4, 8, 16, 32, 64].
-                # finest_scale=56 → boxes with sqrt(area) < 56 go to P2 (stride 4),
-                # which is fine for our thin bands (e.g. 119×9=1071px² → sqrt=32 < 56 → P2).
                 "featmap_strides": [4, 8, 16, 32, 64],
+                # finest_scale=56: boxes with sqrt(area)<56 → P2 (stride 4).
+                # Thin bands 119×9=1071px² → sqrt=32 < 56 → P2 ✓
                 "finest_scale": 56,
             },
             "bbox_head": [
                 {
                     "type": "Shared4Conv1FCBBoxHead",
-                    "in_channels": 256,
-                    "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
-                    "num_classes": num_fg_classes,
+                    "in_channels": 256, "fc_out_channels": 1024,
+                    "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
-                    "bbox_coder": {
-                        "type": "DeltaXYWHBBoxCoder",
-                        "target_means": [0.0, 0.0, 0.0, 0.0],
-                        "target_stds": [0.1, 0.1, 0.2, 0.2],
-                    },
+                    "bbox_coder": {"type": "DeltaXYWHBBoxCoder",
+                                   "target_means": [0.0, 0.0, 0.0, 0.0],
+                                   "target_stds": [0.1, 0.1, 0.2, 0.2]},
                     "reg_class_agnostic": True,
-                    "loss_cls": {
-                        "type": "CrossEntropyLoss",
-                        "use_sigmoid": False,
-                        "loss_weight": 1.0,
-                    },
+                    "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": False, "loss_weight": 1.0},
                     "loss_bbox": roi_stage_losses[0],
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
-                    "in_channels": 256,
-                    "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
-                    "num_classes": num_fg_classes,
+                    "in_channels": 256, "fc_out_channels": 1024,
+                    "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
-                    "bbox_coder": {
-                        "type": "DeltaXYWHBBoxCoder",
-                        "target_means": [0.0, 0.0, 0.0, 0.0],
-                        "target_stds": [0.05, 0.05, 0.1, 0.1],
-                    },
+                    "bbox_coder": {"type": "DeltaXYWHBBoxCoder",
+                                   "target_means": [0.0, 0.0, 0.0, 0.0],
+                                   "target_stds": [0.05, 0.05, 0.1, 0.1]},
                     "reg_class_agnostic": True,
-                    "loss_cls": {
-                        "type": "CrossEntropyLoss",
-                        "use_sigmoid": False,
-                        "loss_weight": 1.0,
-                    },
+                    "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": False, "loss_weight": 1.0},
                     "loss_bbox": roi_stage_losses[1],
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
-                    "in_channels": 256,
-                    "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
-                    "num_classes": num_fg_classes,
+                    "in_channels": 256, "fc_out_channels": 1024,
+                    "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
-                    "bbox_coder": {
-                        "type": "DeltaXYWHBBoxCoder",
-                        "target_means": [0.0, 0.0, 0.0, 0.0],
-                        "target_stds": [0.033, 0.033, 0.067, 0.067],
-                    },
+                    "bbox_coder": {"type": "DeltaXYWHBBoxCoder",
+                                   "target_means": [0.0, 0.0, 0.0, 0.0],
+                                   "target_stds": [0.033, 0.033, 0.067, 0.067]},
                     "reg_class_agnostic": True,
-                    "loss_cls": {
-                        "type": "CrossEntropyLoss",
-                        "use_sigmoid": False,
-                        "loss_weight": 1.0,
-                    },
+                    "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": False, "loss_weight": 1.0},
                     "loss_bbox": roi_stage_losses[2],
                 },
             ],
@@ -613,15 +430,24 @@ def _build_mmdet_cfg(
         "train_cfg": {
             "rpn": {
                 "assigner": {
-                    "type": "ATSSAssigner",
-                    "topk": int(rpn_atss_topk),
+                    # FIX: Reverted from ATSSAssigner to MaxIoUAssigner.
+                    # ATSSAssigner is designed for anchor-free one-stage detectors (FCOS/ATSS)
+                    # and assumes GT centers fall within anchor regions per FPN level.
+                    # For Cascade R-CNN's RPN with fixed anchors, ATSS can mis-assign
+                    # horizontal thin bands (ar>20) that span multiple FPN levels.
+                    # MaxIoUAssigner + match_low_quality=True guarantees every GT gets
+                    # at least one positive anchor even below pos_iou_thr.
+                    "type": "MaxIoUAssigner",
+                    "pos_iou_thr": 0.5,
+                    "neg_iou_thr": 0.3,
+                    "min_pos_iou": 0.3,
+                    "match_low_quality": True,
+                    "ignore_iof_thr": -1,
                 },
                 "sampler": {
                     "type": "RandomSampler",
-                    "num": 256,
-                    "pos_fraction": 0.5,  # 50% positivos garantizados si ATSS los genera
-                    "neg_pos_ub": 3,  # Como máximo 3x negativas (256*0.5 = 128 pos, 384 neg)
-                    "add_gt_as_proposals": False,
+                    "num": 256, "pos_fraction": 0.5,
+                    "neg_pos_ub": -1, "add_gt_as_proposals": False,
                 },
                 "allowed_border": -1,
                 "pos_weight": -1,
@@ -635,61 +461,31 @@ def _build_mmdet_cfg(
             },
             "rcnn": [
                 {
-                    "assigner": {
-                        "type": "MaxIoUAssigner",
-                        "pos_iou_thr": stage1_iou,
-                        "neg_iou_thr": stage1_iou,
-                        "min_pos_iou": stage1_iou,
-                        "match_low_quality": False,
-                        "ignore_iof_thr": -1,
-                    },
-                    "sampler": {
-                        "type": "RandomSampler",
-                        "num": 512,
-                        "pos_fraction": 0.25,
-                        "neg_pos_ub": -1,
-                        "add_gt_as_proposals": True,
-                    },
-                    "pos_weight": -1,
-                    "debug": False,
+                    "assigner": {"type": "MaxIoUAssigner",
+                                 "pos_iou_thr": stage1_iou, "neg_iou_thr": stage1_iou,
+                                 "min_pos_iou": stage1_iou, "match_low_quality": False,
+                                 "ignore_iof_thr": -1},
+                    "sampler": {"type": "RandomSampler", "num": 512, "pos_fraction": 0.25,
+                                "neg_pos_ub": -1, "add_gt_as_proposals": True},
+                    "pos_weight": -1, "debug": False,
                 },
                 {
-                    "assigner": {
-                        "type": "MaxIoUAssigner",
-                        "pos_iou_thr": stage2_iou,
-                        "neg_iou_thr": stage2_iou,
-                        "min_pos_iou": stage2_iou,
-                        "match_low_quality": False,
-                        "ignore_iof_thr": -1,
-                    },
-                    "sampler": {
-                        "type": "RandomSampler",
-                        "num": 512,
-                        "pos_fraction": 0.25,
-                        "neg_pos_ub": -1,
-                        "add_gt_as_proposals": True,
-                    },
-                    "pos_weight": -1,
-                    "debug": False,
+                    "assigner": {"type": "MaxIoUAssigner",
+                                 "pos_iou_thr": stage2_iou, "neg_iou_thr": stage2_iou,
+                                 "min_pos_iou": stage2_iou, "match_low_quality": False,
+                                 "ignore_iof_thr": -1},
+                    "sampler": {"type": "RandomSampler", "num": 512, "pos_fraction": 0.25,
+                                "neg_pos_ub": -1, "add_gt_as_proposals": True},
+                    "pos_weight": -1, "debug": False,
                 },
                 {
-                    "assigner": {
-                        "type": "MaxIoUAssigner",
-                        "pos_iou_thr": stage3_iou,
-                        "neg_iou_thr": stage3_iou,
-                        "min_pos_iou": stage3_iou,
-                        "match_low_quality": False,
-                        "ignore_iof_thr": -1,
-                    },
-                    "sampler": {
-                        "type": "RandomSampler",
-                        "num": 512,
-                        "pos_fraction": 0.25,
-                        "neg_pos_ub": -1,
-                        "add_gt_as_proposals": True,
-                    },
-                    "pos_weight": -1,
-                    "debug": False,
+                    "assigner": {"type": "MaxIoUAssigner",
+                                 "pos_iou_thr": stage3_iou, "neg_iou_thr": stage3_iou,
+                                 "min_pos_iou": stage3_iou, "match_low_quality": False,
+                                 "ignore_iof_thr": -1},
+                    "sampler": {"type": "RandomSampler", "num": 512, "pos_fraction": 0.25,
+                                "neg_pos_ub": -1, "add_gt_as_proposals": True},
+                    "pos_weight": -1, "debug": False,
                 },
             ],
         },
@@ -701,16 +497,8 @@ def _build_mmdet_cfg(
                 "min_bbox_size": 0,
             },
             "rcnn": {
-                # FIX: was 0.0 — keeping every box down to near-zero confidence floods
-                # the evaluator with false positives and degrades precision.
-                # soft_nms min_score=0.001 already filters below that, but score_thr
-                # is the post-NMS threshold. 0.05 is a safe competition default.
                 "score_thr": 0.05,
-                "nms": {
-                    "type": "soft_nms",
-                    "iou_threshold": 0.5,
-                    "min_score": 0.001,
-                },
+                "nms": {"type": "soft_nms", "iou_threshold": 0.5, "min_score": 0.001},
                 "max_per_img": int(cfg.model.detections_per_img),
             },
         },
@@ -727,141 +515,91 @@ def _build_mmdet_cfg(
         (int(img_w * 1.1), int(img_h * 1.1)),
     ]
 
-    # FIX: CopyPaste is a "mix transform" — it needs two images at once.
-    # In a plain CocoDataset pipeline it silently does nothing because
-    # results['mix_results'] is never populated.
-    # The fix is to split the pipeline: CocoDataset handles only loading,
-    # then MultiImageMixDataset wraps it and supplies the mixed second image,
-    # and the full augmentation pipeline (including CopyPaste) runs on top.
-    #
-    # Pipeline for the inner CocoDataset — only loading, no augmentation:
-    inner_pipeline = [
-        {"type": "LoadImageFromFile"},
-        {"type": "LoadAnnotations", "with_bbox": True, "with_mask": bool(use_copy_paste)},
-    ]
-
-    # FIX: RandomCrop with crop_size=(float, float) is not supported in MMDet v3.
-    # RandomCrop.crop_size must be (int_h, int_w). Use explicit pixel sizes here.
-    # We compute a representative crop: 80% of the training image dimensions,
-    # which gives a good balance between seeing full-width RFI bands and cropping.
-    crop_h = max(64, int(img_h * 0.8))
-    crop_w = max(64, int(img_w * 0.8))
-
-    # Shared augmentations used in both training setups.
-    # NOTE: allow_negative_crop=True avoids repeatedly returning None on sparse datasets.
-    common_aug_pipeline = [
+    common_aug = [
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
-        # Vertical flip: for horizontal RFI bands this just changes y-position,
-        # which helps the model generalise to bands at different vertical positions.
         {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
         {"type": "RandomShift", "max_shift_px": 32},
-        {
-            "type": "PhotoMetricDistortion",
-            "brightness_delta": 20,
-            "contrast_range": (0.8, 1.2),
-            "saturation_range": (1.0, 1.0),
-            "hue_delta": 0,
-        },
+        {"type": "PhotoMetricDistortion",
+         "brightness_delta": 20, "contrast_range": (0.8, 1.2),
+         "saturation_range": (1.0, 1.0), "hue_delta": 0},
     ]
-    # RandomCrop disabled: causes empty crops that collapse RPN training on sparse/elongated datasets
 
-    # Full augmentation pipeline (runs inside MultiImageMixDataset when CopyPaste is enabled).
-    train_pipeline = [*common_aug_pipeline, {"type": "PackDetInputs"}]
-    if use_copy_paste:
-        # CopyPaste needs gt masks; only enable it for segmentation-capable datasets.
-        train_pipeline.insert(0, {"type": "CopyPaste", "max_num_pasted": 4})
+    # CopyPaste with paste_by_box=True works without instance segmentation masks.
+    # The dataset has no segmentation annotations so we use bbox-based paste.
+    # MultiImageMixDataset supplies the second image needed for the mix.
+    inner_pipeline = [
+        {"type": "LoadImageFromFile"},
+        {"type": "LoadAnnotations", "with_bbox": True},
+    ]
+    train_pipeline = [
+        {"type": "CopyPaste", "max_num_pasted": 4, "paste_by_box": True},
+        *common_aug,
+        {"type": "PackDetInputs"},
+    ]
+
+    train_dataset: Dict[str, Any] = {
+        "type": "MultiImageMixDataset",
+        "dataset": {
+            "type": "CocoDataset",
+            "metainfo": {"classes": class_names},
+            "data_root": str(cfg.paths.project_root) + "/",
+            "ann_file": str(train_ann_path),
+            "data_prefix": {"img": "data/images/train/"},
+            "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
+            "pipeline": inner_pipeline,
+        },
+        "pipeline": train_pipeline,
+    }
 
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {
-            "type": "PackDetInputs",
-            "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor"),
-        },
+        {"type": "PackDetInputs",
+         "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
     ]
     tta_pipeline = [
         {"type": "LoadImageFromFile"},
-        {
-            "type": "TestTimeAug",
-            "transforms": [
-                [
-                    {"type": "Resize", "scale": tta_scales[0], "keep_ratio": True},
-                    {"type": "Resize", "scale": tta_scales[1], "keep_ratio": True},
-                    {"type": "Resize", "scale": tta_scales[2], "keep_ratio": True},
-                ],
-                [
-                    {"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
-                    {"type": "RandomFlip", "prob": 1.0, "direction": "horizontal"},
-                ],
-                [
-                    {
-                        "type": "PackDetInputs",
-                        "meta_keys": (
-                            "img_id",
-                            "img_path",
-                            "ori_shape",
-                            "img_shape",
-                            "scale_factor",
-                            "flip",
-                            "flip_direction",
-                        ),
-                    }
-                ],
-            ],
-        },
+        {"type": "TestTimeAug", "transforms": [
+            [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
+            [{"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
+             {"type": "RandomFlip", "prob": 1.0, "direction": "horizontal"}],
+            [{"type": "PackDetInputs",
+              "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape",
+                            "scale_factor", "flip", "flip_direction")}],
+        ]},
     ]
 
-    dataroot = str(cfg.paths.project_root) + "/"
-
-    if use_copy_paste:
-        # CopyPaste is a mix-transform and requires MultiImageMixDataset.
-        train_dataset: Dict[str, Any] = {
-            "type": "MultiImageMixDataset",
-            "dataset": {
-                "type": "CocoDataset",
-                "metainfo": {"classes": class_names},
-                "data_root": dataroot,
-                "ann_file": str(train_ann_path),
-                "data_prefix": {"img": "data/images/train/"},
-                "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
-                "pipeline": inner_pipeline,
+    # FIX: AMP is stable with Cascade RCNN + CIoU/GIoU + AdamW on torch>=2.0.
+    # Previous code always printed a warning and silently ignored use_amp.
+    # AmpOptimWrapper handles fp16 automatically — ~1.5-2x speed vs OptimWrapper.
+    use_amp = bool(getattr(cfg.train, "use_amp", False))
+    if use_amp:
+        optim_wrapper: Dict[str, Any] = {
+            "type": "AmpOptimWrapper",
+            "dtype": "float16",
+            "optimizer": {
+                "type": "AdamW",
+                "lr": float(cfg.train.learning_rate),
+                "weight_decay": float(cfg.train.weight_decay),
             },
-            "pipeline": train_pipeline,
         }
     else:
-        # Without CopyPaste, train directly with CocoDataset to avoid unnecessary wrapper retries.
-        train_dataset = {
-            "type": "CocoDataset",
-            "metainfo": {"classes": class_names},
-            "data_root": dataroot,
-            "ann_file": str(train_ann_path),
-            "data_prefix": {"img": "data/images/train/"},
-            "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
-            "pipeline": [
-                {"type": "LoadImageFromFile"},
-                {"type": "LoadAnnotations", "with_bbox": True, "with_mask": False},
-                *common_aug_pipeline,
-                {"type": "PackDetInputs"},
-            ],
+        optim_wrapper = {
+            "type": "OptimWrapper",
+            "optimizer": {
+                "type": "AdamW",
+                "lr": float(cfg.train.learning_rate),
+                "weight_decay": float(cfg.train.weight_decay),
+            },
         }
 
-    optim_wrapper: Dict[str, Any] = {
-        "type": "OptimWrapper",
-        "optimizer": {
-            "type": "AdamW",
-            "lr": float(cfg.train.learning_rate),
-            "weight_decay": float(cfg.train.weight_decay),
-        },
-    }
     if cfg.model.architecture in {CASCADE_ARCH_SWIN_L, CASCADE_ARCH_CONVNEXT_XL}:
         optim_wrapper["paramwise_cfg"] = {
             "decay_rate": 0.9,
             "decay_type": "layer_wise",
             "num_layers": 12,
         }
-    if cfg.train.use_amp:
-        print("[cascade] AMP requested, but disabled for MMDet Cascade stability.")
     if cfg.train.grad_clip_norm is not None:
         optim_wrapper["clip_grad"] = {
             "max_norm": float(cfg.train.grad_clip_norm),
@@ -870,21 +608,17 @@ def _build_mmdet_cfg(
 
     dist_backend = "gloo" if os.name == "nt" else "nccl"
     mp_start_method = "spawn" if os.name == "nt" else "fork"
+    dataroot = str(cfg.paths.project_root) + "/"
 
     runtime_cfg: Dict[str, Any] = {
         "default_scope": "mmdet",
-        "custom_imports": {
-            "imports": ["mmpretrain.models"],
-            "allow_failed_imports": False,
-        },
+        "custom_imports": {"imports": ["mmpretrain.models"], "allow_failed_imports": False},
         "work_dir": str(work_dir),
         "model": model,
         "tta_model": {
             "type": "DetTTAModel",
-            "tta_cfg": {
-                "nms": {"type": "nms", "iou_threshold": 0.5},
-                "max_per_img": int(cfg.model.detections_per_img),
-            },
+            "tta_cfg": {"nms": {"type": "nms", "iou_threshold": 0.5},
+                        "max_per_img": int(cfg.model.detections_per_img)},
         },
         "tta_pipeline": tta_pipeline,
         "train_dataloader": {
@@ -927,49 +661,30 @@ def _build_mmdet_cfg(
                 "pipeline": test_pipeline,
             },
         },
-        "val_evaluator": {
-            "type": "CocoMetric",
-            "ann_file": str(val_ann_path),
-            "metric": "bbox",
-            "format_only": False,
-        },
-        "test_evaluator": {
-            "type": "CocoMetric",
-            "ann_file": str(val_ann_path),
-            "metric": "bbox",
-            "format_only": False,
-        },
-        "train_cfg": {"type": "EpochBasedTrainLoop", "max_epochs": int(cfg.train.epochs), "val_interval": 1},
+        "val_evaluator": {"type": "CocoMetric", "ann_file": str(val_ann_path),
+                          "metric": "bbox", "format_only": False},
+        "test_evaluator": {"type": "CocoMetric", "ann_file": str(val_ann_path),
+                           "metric": "bbox", "format_only": False},
+        "train_cfg": {"type": "EpochBasedTrainLoop",
+                      "max_epochs": int(cfg.train.epochs), "val_interval": 1},
         "val_cfg": {"type": "ValLoop"},
         "test_cfg": {"type": "TestLoop"},
         "optim_wrapper": optim_wrapper,
         "param_scheduler": [
-            {
-                "type": "LinearLR",
-                "start_factor": 0.1,
-                "by_epoch": True,
-                "begin": 0,
-                "end": warmup_end,
-            },
-            {
-                "type": "CosineAnnealingLR",
-                "eta_min": 1e-6,
-                "by_epoch": True,
-                "begin": warmup_end,
-                "end": int(cfg.train.epochs),
-                "T_max": int(cfg.train.epochs) - warmup_end,
-            },
+            {"type": "LinearLR", "start_factor": 0.1, "by_epoch": True,
+             "begin": 0, "end": warmup_end},
+            {"type": "CosineAnnealingLR", "eta_min": 1e-6, "by_epoch": True,
+             "begin": warmup_end, "end": int(cfg.train.epochs),
+             "T_max": int(cfg.train.epochs) - warmup_end},
         ],
         "default_hooks": {
             "timer": {"type": "IterTimerHook"},
             "logger": {"type": "LoggerHook", "interval": 50},
             "param_scheduler": {"type": "ParamSchedulerHook"},
             "checkpoint": {
-                "type": "CheckpointHook",
-                "interval": 1,
+                "type": "CheckpointHook", "interval": 1,
                 "max_keep_ckpts": int(cfg.train.save_top_k),
-                "save_best": "coco/bbox_mAP",
-                "rule": "greater",
+                "save_best": "coco/bbox_mAP", "rule": "greater",
             },
             "sampler_seed": {"type": "DistSamplerSeedHook"},
             "visualization": {"type": "DetVisualizationHook"},
@@ -983,39 +698,21 @@ def _build_mmdet_cfg(
         "log_level": "INFO",
         "load_from": None,
         "resume": False,
-        "auto_scale_lr": {
-            "enable": False,
-            "base_batch_size": 4,
-        },
+        "auto_scale_lr": {"enable": False, "base_batch_size": 4},
     }
 
-    # Debug: validar que losses no son None
-    assert rpn_loss_bbox is not None and rpn_loss_bbox.get('loss_weight') is not None, "rpn_loss_bbox collapsed to None!"
-    assert roi_stage_losses is not None and len(roi_stage_losses) == 3, "roi_stage_losses collapsed!"
-    
-    print(f"[cascade] adaptive bbox losses -> {adaptive_loss_summary}")
+    print(f"[cascade] adaptive bbox losses   -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
-    print(
-        "[cascade] anti-collapse policy -> "
-        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, "
-        f"random_crop={use_random_crop}, atss_topk={rpn_atss_topk}"
-    )
-    print(f"[cascade] RPN bbox loss -> type={rpn_loss_bbox['type']}, weight={rpn_loss_bbox['loss_weight']}")
-    print(f"[cascade] ROI bbox losses -> {[(l['type'], l['loss_weight']) for l in roi_stage_losses]}")
+    print(f"[cascade] AMP={'enabled (fp16)' if use_amp else 'disabled'}")
 
     return runtime_cfg
 
 
 def _patch_transformers_nn_nameerror() -> None:
-    """
-    Work around a known transformers import bug that can raise:
-    NameError: name 'nn' is not defined
-    """
     try:
         import torch
     except Exception:
         return
-
     if not hasattr(builtins, "nn"):
         builtins.nn = torch.nn
 
@@ -1047,8 +744,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
         if "nn" in str(exc):
             raise RuntimeError(
                 "MMDetection failed due to an incompatible transformers build. "
-                "Try pinning transformers to a stable version (for example 4.44.x) "
-                "or upgrading torch to a version supported by your transformers package."
+                "Try pinning transformers to a stable version (e.g. 4.44.x)."
             ) from exc
         raise
 
@@ -1060,10 +756,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
 
     coco = _load_coco(cfg.paths.train_annotations_path)
     class_names = _extract_class_names_from_coco(coco)
-    use_copy_paste = _coco_has_instance_masks(coco)
     print(f"[cascade] classes={class_names} (num_classes={len(class_names)})")
-    if not use_copy_paste:
-        print("[cascade] segmentation masks not found in COCO annotations; CopyPaste disabled.")
 
     train_ann_path = cfg.paths.outputs_dir / "cascade_train_split.json"
     val_ann_path = cfg.paths.outputs_dir / "cascade_val_split.json"
@@ -1080,7 +773,6 @@ def train_cascade_rcnn(cfg: Config) -> None:
         val_ann_path=val_ann_path,
         work_dir=work_dir,
         class_names=class_names,
-        use_copy_paste=use_copy_paste,
     )
     config_path = work_dir / "cascade_config.py"
     MMConfig(mmdet_cfg).dump(str(config_path))
