@@ -573,8 +573,9 @@ def _build_mmdet_cfg(
     crop_h = max(64, int(img_h * 0.8))
     crop_w = max(64, int(img_w * 0.8))
 
-    # Full augmentation pipeline (runs inside MultiImageMixDataset):
-    train_pipeline = [
+    # Shared augmentations used in both training setups.
+    # NOTE: allow_negative_crop=True avoids repeatedly returning None on sparse datasets.
+    common_aug_pipeline = [
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
         # Vertical flip: for horizontal RFI bands this just changes y-position,
@@ -582,7 +583,7 @@ def _build_mmdet_cfg(
         {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
         {"type": "RandomShift", "max_shift_px": 32},
         # RandomCrop with explicit int sizes (not float ratios):
-        {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": False},
+        {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": True},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
@@ -590,8 +591,10 @@ def _build_mmdet_cfg(
             "saturation_range": (1.0, 1.0),
             "hue_delta": 0,
         },
-        {"type": "PackDetInputs"},
     ]
+
+    # Full augmentation pipeline (runs inside MultiImageMixDataset when CopyPaste is enabled).
+    train_pipeline = [*common_aug_pipeline, {"type": "PackDetInputs"}]
     if use_copy_paste:
         # CopyPaste needs gt masks; only enable it for segmentation-capable datasets.
         train_pipeline.insert(0, {"type": "CopyPaste", "max_num_pasted": 4})
@@ -638,22 +641,37 @@ def _build_mmdet_cfg(
 
     dataroot = str(cfg.paths.project_root) + "/"
 
-    # FIX: wrap CocoDataset in MultiImageMixDataset so CopyPaste gets two images.
-    # The inner dataset uses only the loading pipeline; all spatial augmentations
-    # (including CopyPaste) run in the outer pipeline managed by MultiImageMixDataset.
-    train_dataset: Dict[str, Any] = {
-        "type": "MultiImageMixDataset",
-        "dataset": {
+    if use_copy_paste:
+        # CopyPaste is a mix-transform and requires MultiImageMixDataset.
+        train_dataset: Dict[str, Any] = {
+            "type": "MultiImageMixDataset",
+            "dataset": {
+                "type": "CocoDataset",
+                "metainfo": {"classes": class_names},
+                "data_root": dataroot,
+                "ann_file": str(train_ann_path),
+                "data_prefix": {"img": "data/images/train/"},
+                "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+                "pipeline": inner_pipeline,
+            },
+            "pipeline": train_pipeline,
+        }
+    else:
+        # Without CopyPaste, train directly with CocoDataset to avoid unnecessary wrapper retries.
+        train_dataset = {
             "type": "CocoDataset",
             "metainfo": {"classes": class_names},
             "data_root": dataroot,
             "ann_file": str(train_ann_path),
             "data_prefix": {"img": "data/images/train/"},
             "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
-            "pipeline": inner_pipeline,
-        },
-        "pipeline": train_pipeline,
-    }
+            "pipeline": [
+                {"type": "LoadImageFromFile"},
+                {"type": "LoadAnnotations", "with_bbox": True, "with_mask": False},
+                *common_aug_pipeline,
+                {"type": "PackDetInputs"},
+            ],
+        }
 
     optim_wrapper: Dict[str, Any] = {
         "type": "OptimWrapper",
