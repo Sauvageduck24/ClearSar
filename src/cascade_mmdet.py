@@ -333,7 +333,7 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (14, 14),
+                    "output_size": (7, 7),
                     "sampling_ratio": 2,
                 },
                 "out_channels": 256,
@@ -345,7 +345,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -365,7 +365,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -385,7 +385,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (14, 14),
+                    "roi_feat_size": (7, 7),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
