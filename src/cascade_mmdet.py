@@ -224,10 +224,71 @@ def _build_adaptive_rpn_anchor_generator(coco: Dict[str, Any]) -> Tuple[Dict[str
     anchors_per_loc = len(scales) * len(ratios)
     summary = (
         f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f} | "
-        f"rpn_anchors=scales{tuple(scales)}xratios{tuple(ratios)} "
+        f"rpn_anchors=scales{tuple(scales)} xratios{tuple(ratios)} "
         f"(anchors_per_loc={anchors_per_loc})"
     )
     return anchor_generator, summary
+
+
+def _register_cascade_progress_hook() -> bool:
+    try:
+        from mmengine.hooks import Hook
+        from mmengine.registry import HOOKS
+        from tqdm.auto import tqdm
+    except Exception:
+        return False
+
+    @HOOKS.register_module(force=True)
+    class CascadeProgressBarHook(Hook):
+        priority = "LOW"
+
+        def __init__(self, update_interval: int = 1) -> None:
+            self.update_interval = max(1, int(update_interval))
+            self._pbar = None
+            self._last_step = 0
+
+        def before_train_epoch(self, runner) -> None:
+            total = len(runner.train_dataloader) if runner.train_dataloader is not None else None
+            self._pbar = tqdm(
+                total=total,
+                desc=f"Epoch {runner.epoch + 1}/{runner.max_epochs}",
+                dynamic_ncols=True,
+                leave=True,
+                unit="it",
+            )
+            self._last_step = 0
+
+        def after_train_iter(self, runner, batch_idx: int, data_batch=None, outputs=None) -> None:
+            if self._pbar is None:
+                return
+            current_step = int(batch_idx) + 1
+            delta = current_step - self._last_step
+            if delta >= self.update_interval:
+                self._pbar.update(delta)
+                self._last_step = current_step
+
+            if isinstance(outputs, dict):
+                loss_value = outputs.get("loss")
+                if loss_value is not None:
+                    try:
+                        self._pbar.set_postfix(loss=f"{float(loss_value):.4f}", refresh=False)
+                    except Exception:
+                        pass
+
+        def after_train_epoch(self, runner) -> None:
+            if self._pbar is None:
+                return
+            if self._pbar.total is not None and self._last_step < self._pbar.total:
+                self._pbar.update(self._pbar.total - self._last_step)
+            self._pbar.close()
+            self._pbar = None
+
+        def after_run(self, runner) -> None:
+            if self._pbar is not None:
+                self._pbar.close()
+                self._pbar = None
+
+    return True
 
 
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
@@ -355,6 +416,7 @@ def _build_mmdet_cfg(
     val_ann_path: Path,
     work_dir: Path,
     class_names: Tuple[str, ...],
+    use_progress_bar: bool = False,
 ) -> Dict[str, Any]:
     if cfg.train.image_size is None:
         img_h, img_w = (1024, 1024)
@@ -684,7 +746,7 @@ def _build_mmdet_cfg(
         ],
         "default_hooks": {
             "timer": {"type": "IterTimerHook"},
-            "logger": {"type": "LoggerHook", "interval": 50},
+            "logger": {"type": "LoggerHook", "interval": 200},
             "param_scheduler": {"type": "ParamSchedulerHook"},
             "checkpoint": {
                 "type": "CheckpointHook", "interval": 1,
@@ -706,9 +768,13 @@ def _build_mmdet_cfg(
         "auto_scale_lr": {"enable": False, "base_batch_size": 4},
     }
 
+    if use_progress_bar:
+        runtime_cfg["custom_hooks"] = [{"type": "CascadeProgressBarHook", "update_interval": 1}]
+
     print(f"[cascade] adaptive bbox losses   -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
     print(f"[cascade] adaptive rpn anchors    -> {adaptive_anchor_summary}")
+    print(f"[cascade] progress bar            -> {'enabled' if use_progress_bar else 'disabled'}")
     print(f"[cascade] AMP={'enabled (fp16)' if use_amp else 'disabled'}")
 
     return runtime_cfg
@@ -754,6 +820,10 @@ def train_cascade_rcnn(cfg: Config) -> None:
             ) from exc
         raise
 
+    progress_hook_enabled = _register_cascade_progress_hook()
+    if not progress_hook_enabled:
+        print("[cascade] tqdm no disponible: se mantiene logging clasico.")
+
     train_ids, val_ids = split_train_val_image_ids(
         annotation_path=cfg.paths.train_annotations_path,
         val_fraction=cfg.train.val_fraction,
@@ -779,6 +849,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
         val_ann_path=val_ann_path,
         work_dir=work_dir,
         class_names=class_names,
+        use_progress_bar=progress_hook_enabled,
     )
     config_path = work_dir / "cascade_config.py"
     MMConfig(mmdet_cfg).dump(str(config_path))
