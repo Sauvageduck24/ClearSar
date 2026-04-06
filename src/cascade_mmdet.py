@@ -338,7 +338,6 @@ def _build_mmdet_cfg(
                 },
                 "out_channels": 256,
                 "featmap_strides": [2, 4, 8, 16, 32],
-                "finest_scale": 112,
             },
             "bbox_head": [
                 {
