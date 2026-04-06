@@ -758,9 +758,7 @@ def _build_mmdet_cfg(
             "hue_delta": 0,
         },
     ]
-    if use_random_crop:
-        # Nunca permitir recortes vacios para evitar batches sin positivos.
-        common_aug_pipeline.insert(4, {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": False})
+    # RandomCrop disabled: causes empty crops that collapse RPN training on sparse/elongated datasets
 
     # Full augmentation pipeline (runs inside MultiImageMixDataset when CopyPaste is enabled).
     train_pipeline = [*common_aug_pipeline, {"type": "PackDetInputs"}]
