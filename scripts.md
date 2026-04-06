@@ -108,7 +108,7 @@ cascade_rcnn_resnet50
 
 # DCNv2 — el más adecuado para rayas deformables, prueba éste primero
 /usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 \
-  --epochs 20 --batch-size 16 --num-workers 8 \
+  --epochs 20 --batch-size 20 --num-workers 8 \
   --image-size 512 --save-top-k 1 --lr 2e-4
 
 # HRNet — bueno para mAP_s por alta resolución espacial
