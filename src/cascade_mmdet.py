@@ -486,7 +486,7 @@ def _build_mmdet_cfg(
                 "out_channels": 256,
                 "featmap_strides": [2, 4, 8, 16, 32],
                 # COCO-style split: boxes with sqrt(area) < 32 go to P2.
-                "finest_scale": 32,
+                "finest_scale": 56,
             },
             "bbox_head": [
                 {
@@ -619,7 +619,6 @@ def _build_mmdet_cfg(
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
         {"type": "RandomFlip", "prob": 0.15, "direction": ["vertical"]},
-        {"type": "RandomShift", "max_shift_px": 16},
         {"type": "PhotoMetricDistortion",
          "brightness_delta": 20, "contrast_range": (0.8, 1.2),
          "saturation_range": (1.0, 1.0), "hue_delta": 0},
