@@ -342,7 +342,7 @@ def _build_mmdet_cfg(
             },
             "bbox_head": [
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
@@ -362,7 +362,7 @@ def _build_mmdet_cfg(
                     "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
@@ -382,7 +382,7 @@ def _build_mmdet_cfg(
                     "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
