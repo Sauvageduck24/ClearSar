@@ -169,8 +169,8 @@ def _build_adaptive_bbox_losses(
         "beta": 1.0 / 9.0,
     }
 
-    # CIoU is safe here as long as degenerate 1px boxes are filtered out.
-    stage_loss_type = "CIoULoss"
+    # GIoU is numerically simpler and avoids the NaN behavior we have seen with CIoU.
+    stage_loss_type = "GIoULoss"
     stage1_weight = 1.0
     stage2_weight = 1.0
     stage3_weight = 1.0
