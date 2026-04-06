@@ -335,7 +335,7 @@ def _build_mmdet_cfg(
             "feat_channels": 256,
             "anchor_generator": {
                 "type": "AnchorGenerator",
-                "scales": [4, 8],
+                "scales": [2, 4, 8],
                 "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 33.0, 50.0],
                 # FIX: was [2, 4, 8, 16, 32, 64] — stride 2 doesn't exist in FPN output
                 # (ResNet/ConvNeXt/Swin all output finest at stride 4).
@@ -348,7 +348,7 @@ def _build_mmdet_cfg(
                 "target_stds": [1.0, 1.0, 1.0, 1.0],
             },
             "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": True, "loss_weight": 1.0},
-            "loss_bbox": {"type": "L1Loss", "loss_weight": 1.0},
+            "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
         },
         "roi_head": {
             "type": "CascadeRoIHead",
@@ -388,7 +388,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
+                    "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
@@ -408,7 +408,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
+                    "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
