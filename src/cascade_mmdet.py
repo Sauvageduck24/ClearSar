@@ -127,10 +127,8 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
             continue
         image_area_by_id[img_id_i] = w_f * h_f
 
-    num_boxes = 0
-    small = 0
-    elongated = 0
-    large = 0
+    rel_areas: List[float] = []
+    elongations: List[float] = []
 
     for ann in annotations:
         if not isinstance(ann, dict):
@@ -151,16 +149,13 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
         if img_area is None or img_area <= 0:
             continue
 
-        num_boxes += 1
         rel_area = (bw * bh) / img_area
         long_short = max(bw / bh, bh / bw)
 
-        if rel_area < 0.0025:
-            small += 1
-        if long_short >= 8.0:
-            elongated += 1
-        if rel_area >= 0.15:
-            large += 1
+        rel_areas.append(rel_area)
+        elongations.append(long_short)
+
+    num_boxes = len(rel_areas)
 
     if num_boxes == 0:
         return {
@@ -168,7 +163,27 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
             "small_ratio": 0.0,
             "elongated_ratio": 0.0,
             "large_ratio": 0.0,
+            "small_thr": 0.0,
+            "large_thr": 0.0,
+            "elongated_thr": 0.0,
         }
+
+    def _quantile(values: List[float], q: float) -> float:
+        s = sorted(values)
+        idx = int((len(s) - 1) * max(0.0, min(1.0, q)))
+        return float(s[idx])
+
+    # Umbrales adaptativos robustos al dataset:
+    # - small: percentil 35 de area relativa (aprox tercio inferior)
+    # - large: percentil 95 de area relativa (cola superior)
+    # - elongated: percentil 50 de elongacion, acotado para no sobreadaptar
+    small_thr = _quantile(rel_areas, 0.35)
+    large_thr = _quantile(rel_areas, 0.95)
+    elongated_thr = min(12.0, max(6.0, _quantile(elongations, 0.50)))
+
+    small = sum(1 for x in rel_areas if x <= small_thr)
+    elongated = sum(1 for x in elongations if x >= elongated_thr)
+    large = sum(1 for x in rel_areas if x >= large_thr)
 
     denom = float(num_boxes)
     return {
@@ -176,6 +191,9 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
         "small_ratio": small / denom,
         "elongated_ratio": elongated / denom,
         "large_ratio": large / denom,
+        "small_thr": small_thr,
+        "large_thr": large_thr,
+        "elongated_thr": elongated_thr,
     }
 
 
@@ -184,6 +202,9 @@ def _build_adaptive_bbox_losses(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], T
     small_ratio = float(stats.get("small_ratio", 0.0))
     elongated_ratio = float(stats.get("elongated_ratio", 0.0))
     large_ratio = float(stats.get("large_ratio", 0.0))
+    small_thr = float(stats.get("small_thr", 0.0))
+    large_thr = float(stats.get("large_thr", 0.0))
+    elongated_thr = float(stats.get("elongated_thr", 0.0))
 
     # Ajuste automático suave: más peso cuando predominan cajas pequeñas/elongadas/grandes.
     rpn_weight = min(20.0, 8.0 + 8.0 * small_ratio + 6.0 * elongated_ratio + 4.0 * large_ratio)
@@ -205,6 +226,7 @@ def _build_adaptive_bbox_losses(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], T
 
     summary = (
         f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f}, "
+        f"thr_small={small_thr:.6f}, thr_elong={elongated_thr:.2f}, thr_large={large_thr:.6f}, "
         f"rpn={rpn_loss_bbox['type']}@{rpn_loss_bbox['loss_weight']:.3f}, "
         f"roi=[{roi_stage_losses[0]['type']}@{roi_stage_losses[0]['loss_weight']:.3f}, "
         f"{roi_stage_losses[1]['type']}@{roi_stage_losses[1]['loss_weight']:.3f}, "
