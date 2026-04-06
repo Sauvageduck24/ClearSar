@@ -78,6 +78,25 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
     return tuple(uniq)
 
 
+def _coco_has_instance_masks(coco: Dict[str, Any]) -> bool:
+    annotations = coco.get("annotations", [])
+    if not isinstance(annotations, list):
+        return False
+
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        seg = ann.get("segmentation")
+        if isinstance(seg, list) and len(seg) > 0:
+            return True
+        if isinstance(seg, dict):
+            counts = seg.get("counts")
+            size = seg.get("size")
+            if counts is not None and isinstance(size, list) and len(size) == 2:
+                return True
+    return False
+
+
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
     if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
@@ -287,6 +306,7 @@ def _build_mmdet_cfg(
     val_ann_path: Path,
     work_dir: Path,
     class_names: Tuple[str, ...],
+    use_copy_paste: bool,
 ) -> Dict[str, Any]:
     if cfg.train.image_size is None:
         img_h, img_w = (1024, 1024)
@@ -543,7 +563,7 @@ def _build_mmdet_cfg(
     # Pipeline for the inner CocoDataset — only loading, no augmentation:
     inner_pipeline = [
         {"type": "LoadImageFromFile"},
-        {"type": "LoadAnnotations", "with_bbox": True},
+        {"type": "LoadAnnotations", "with_bbox": True, "with_mask": bool(use_copy_paste)},
     ]
 
     # FIX: RandomCrop with crop_size=(float, float) is not supported in MMDet v3.
@@ -555,9 +575,6 @@ def _build_mmdet_cfg(
 
     # Full augmentation pipeline (runs inside MultiImageMixDataset):
     train_pipeline = [
-        # CopyPaste pastes RFI boxes from a second image onto the current one.
-        # Great for mAP_s (more small RFI examples) and mAP_l (more thick blocks).
-        {"type": "CopyPaste", "max_num_pasted": 4},
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
         # Vertical flip: for horizontal RFI bands this just changes y-position,
@@ -575,6 +592,9 @@ def _build_mmdet_cfg(
         },
         {"type": "PackDetInputs"},
     ]
+    if use_copy_paste:
+        # CopyPaste needs gt masks; only enable it for segmentation-capable datasets.
+        train_pipeline.insert(0, {"type": "CopyPaste", "max_num_pasted": 4})
 
     test_pipeline = [
         {"type": "LoadImageFromFile"},
@@ -835,7 +855,10 @@ def train_cascade_rcnn(cfg: Config) -> None:
 
     coco = _load_coco(cfg.paths.train_annotations_path)
     class_names = _extract_class_names_from_coco(coco)
+    use_copy_paste = _coco_has_instance_masks(coco)
     print(f"[cascade] classes={class_names} (num_classes={len(class_names)})")
+    if not use_copy_paste:
+        print("[cascade] segmentation masks not found in COCO annotations; CopyPaste disabled.")
 
     train_ann_path = cfg.paths.outputs_dir / "cascade_train_split.json"
     val_ann_path = cfg.paths.outputs_dir / "cascade_val_split.json"
@@ -851,6 +874,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
         val_ann_path=val_ann_path,
         work_dir=work_dir,
         class_names=class_names,
+        use_copy_paste=use_copy_paste,
     )
     config_path = work_dir / "cascade_config.py"
     MMConfig(mmdet_cfg).dump(str(config_path))
