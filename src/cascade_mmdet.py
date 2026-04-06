@@ -449,8 +449,8 @@ def _build_mmdet_cfg(
     # Reducing RoI head workload by ~66% (1000→300 boxes) halves stage computation without mAP loss.
     train_rpn_nms_pre = 2500
     test_rpn_nms_pre = 2500
-    max_train_proposals = 300
-    max_test_dets = 300
+    max_train_proposals = 1000
+    max_test_dets = 1000
 
     model = {
         "type": "CascadeRCNN",
