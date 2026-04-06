@@ -557,7 +557,7 @@ def _build_mmdet_cfg(
                 "nms_pre": train_rpn_nms_pre,
                 "max_per_img": max_train_proposals,
                 "nms": {"type": "nms", "iou_threshold": 0.65},
-                "min_bbox_size": 0,
+                "min_bbox_size": 2,
             },
             "rcnn": [
                 {
@@ -597,7 +597,7 @@ def _build_mmdet_cfg(
                 "min_bbox_size": 2,
             },
             "rcnn": {
-                "score_thr": 0.05,
+                "score_thr": 0.01,
                 "nms": {"type": "soft_nms", "iou_threshold": 0.5, "min_score": 0.001},
                 "max_per_img": max_test_dets,
             },
@@ -626,11 +626,11 @@ def _build_mmdet_cfg(
 
     # Keep a single-image pipeline for stability with bbox-only annotations.
     # CopyPaste on MultiImageMixDataset can be brittle depending on sample shapes/types.
+    # NOTE: Normalize is handled by DetDataPreprocessor, not here, to avoid double normalization.
     train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
         *common_aug,
-        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "PackDetInputs"},
     ]
 
@@ -640,7 +640,7 @@ def _build_mmdet_cfg(
         "data_root": str(cfg.paths.project_root) + "/",
         "ann_file": str(train_ann_path),
         "data_prefix": {"img": "data/images/train/"},
-        # Filter 1px boxes to keep CIoU numerically stable while retaining empty images.
+        # Filter tiny boxes (min_size=2) to keep GIoU stable; retain empty images for robustness.
         "filter_cfg": {"filter_empty_gt": False, "min_size": 2},
         "pipeline": train_pipeline,
     }
@@ -648,13 +648,13 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
+        {"type": "Pad", "pad_if_needed": True, "pad_val": {"img": 0}},
         {"type": "PackDetInputs",
          "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
     ]
     tta_pipeline = [
         {"type": "LoadImageFromFile"},
-        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
+        {"type": "Pad", "pad_if_needed": True, "pad_val": {"img": 0}},
         {"type": "TestTimeAug", "transforms": [
             [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
             [{"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
