@@ -648,13 +648,13 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "Pad", "pad_if_needed": True, "pad_val": {"img": 0}},
+        {"type": "Pad", "size_divisor": 32},
         {"type": "PackDetInputs",
          "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
     ]
     tta_pipeline = [
         {"type": "LoadImageFromFile"},
-        {"type": "Pad", "pad_if_needed": True, "pad_val": {"img": 0}},
+        {"type": "Pad", "size_divisor": 32},
         {"type": "TestTimeAug", "transforms": [
             [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
             [{"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
