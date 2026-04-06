@@ -77,7 +77,13 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
     images = coco.get("images", [])
     annotations = coco.get("annotations", [])
     if not isinstance(images, list) or not isinstance(annotations, list):
-        return {"num_boxes": 0.0, "small_ratio": 0.0, "elongated_ratio": 0.0, "large_ratio": 0.0}
+        return {
+            "num_boxes": 0.0,
+            "small_ratio": 0.0,
+            "medium_ratio": 0.0,
+            "large_ratio": 0.0,
+            "elongated_ratio": 0.0,
+        }
 
     image_area_by_id: Dict[int, float] = {}
     for img in images:
@@ -92,7 +98,7 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
         except (TypeError, ValueError):
             continue
 
-    rel_areas: List[float] = []
+    areas: List[float] = []
     elongations: List[float] = []
 
     for ann in annotations:
@@ -111,30 +117,37 @@ def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
         img_area = image_area_by_id.get(img_id)
         if not img_area:
             continue
-        rel_areas.append((bw * bh) / img_area)
+        areas.append(bw * bh)
         elongations.append(max(bw / bh, bh / bw))
 
-    num_boxes = len(rel_areas)
+    num_boxes = len(areas)
     if num_boxes == 0:
-        return {"num_boxes": 0.0, "small_ratio": 0.0, "elongated_ratio": 0.0, "large_ratio": 0.0,
-                "small_thr": 0.0, "large_thr": 0.0, "elongated_thr": 0.0}
+        return {
+            "num_boxes": 0.0,
+            "small_ratio": 0.0,
+            "medium_ratio": 0.0,
+            "large_ratio": 0.0,
+            "small_thr": 1024.0,
+            "medium_thr": 9216.0,
+            "large_thr": 9216.0,
+            "elongated_ratio": 0.0,
+            "elongated_thr": 0.0,
+        }
 
-    def _q(vals: List[float], q: float) -> float:
-        s = sorted(vals)
-        return float(s[int((len(s) - 1) * max(0.0, min(1.0, q)))])
-
-    small_thr = _q(rel_areas, 0.35)
-    large_thr = _q(rel_areas, 0.95)
-    elongated_thr = min(12.0, max(6.0, _q(elongations, 0.50)))
+    small_thr = 32.0 * 32.0
+    medium_thr = 96.0 * 96.0
+    elongated_thr = 6.0
 
     return {
         "num_boxes": float(num_boxes),
-        "small_ratio": sum(1 for x in rel_areas if x <= small_thr) / num_boxes,
-        "elongated_ratio": sum(1 for x in elongations if x >= elongated_thr) / num_boxes,
-        "large_ratio": sum(1 for x in rel_areas if x >= large_thr) / num_boxes,
+        "small_ratio": sum(1 for x in areas if x < small_thr) / num_boxes,
+        "medium_ratio": sum(1 for x in areas if small_thr <= x < medium_thr) / num_boxes,
+        "large_ratio": sum(1 for x in areas if x >= medium_thr) / num_boxes,
         "small_thr": small_thr,
-        "large_thr": large_thr,
+        "medium_thr": medium_thr,
+        "large_thr": medium_thr,
         "elongated_thr": elongated_thr,
+        "elongated_ratio": sum(1 for x in elongations if x >= elongated_thr) / num_boxes,
     }
 
 
@@ -143,6 +156,7 @@ def _build_adaptive_bbox_losses(
 ) -> Tuple[Dict[str, Any], Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]], str]:
     stats = _analyze_bbox_distribution(coco)
     small_ratio = float(stats.get("small_ratio", 0.0))
+    medium_ratio = float(stats.get("medium_ratio", 0.0))
     elongated_ratio = float(stats.get("elongated_ratio", 0.0))
     large_ratio = float(stats.get("large_ratio", 0.0))
 
@@ -155,23 +169,21 @@ def _build_adaptive_bbox_losses(
         "beta": 1.0 / 9.0,
     }
 
-    # FIX: use SmoothL1 for the three Cascade stages as a stability fallback.
-    # On this SAR dataset, the thin boxes plus aggressive augmentation can make
-    # decoded IoU losses unstable early in training and poison the whole loss.
-    # SmoothL1 keeps the regression path bounded and is the safest baseline here.
-    stage_loss_type = "SmoothL1Loss"
-    stage1_weight = round(min(2.0, 1.0 + 0.4 * small_ratio + 0.2 * elongated_ratio), 4)
-    stage2_weight = round(min(2.0, 1.0 + 0.3 * small_ratio + 0.3 * elongated_ratio), 4)
-    stage3_weight = round(min(2.0, 1.0 + 0.2 * elongated_ratio + 0.2 * large_ratio), 4)
+    # CIoU is safe here as long as degenerate 1px boxes are filtered out.
+    stage_loss_type = "CIoULoss"
+    stage1_weight = 1.0
+    stage2_weight = 1.0
+    stage3_weight = 1.0
 
     roi_stage_losses = (
-        {"type": stage_loss_type, "loss_weight": stage1_weight, "beta": 1.0 / 9.0},
-        {"type": stage_loss_type, "loss_weight": stage2_weight, "beta": 1.0 / 9.0},
-        {"type": stage_loss_type, "loss_weight": stage3_weight, "beta": 1.0 / 9.0},
+        {"type": stage_loss_type, "loss_weight": stage1_weight},
+        {"type": stage_loss_type, "loss_weight": stage2_weight},
+        {"type": stage_loss_type, "loss_weight": stage3_weight},
     )
 
     summary = (
-        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f} | "
+        f"small={small_ratio:.3f}, medium={medium_ratio:.3f}, large={large_ratio:.3f}, "
+        f"elongated={elongated_ratio:.3f} | "
         f"rpn=SmoothL1@1.0 | "
         f"roi=[{stage_loss_type}@{stage1_weight}, {stage_loss_type}@{stage2_weight}, "
         f"{stage_loss_type}@{stage3_weight}]"
@@ -210,8 +222,8 @@ def _build_adaptive_rpn_anchor_generator(coco: Dict[str, Any]) -> Tuple[Dict[str
     if elongated_ratio >= 0.30:
         ratios.append(10.0)
 
-    # Prefer one scale for throughput; enable an extra small scale only when needed.
-    scales = [4, 8] if small_ratio >= 0.45 else [8]
+    # Use the real COCO small/medium/large split to decide whether the smaller anchor scale matters.
+    scales = [4, 8] if small_ratio >= 0.30 else [8]
 
     anchor_generator = {
         "type": "AnchorGenerator",
@@ -473,10 +485,8 @@ def _build_mmdet_cfg(
                 "roi_layer": {"type": "RoIAlign", "output_size": (14, 14), "sampling_ratio": 2},
                 "out_channels": 256,
                 "featmap_strides": [2, 4, 8, 16, 32],
-                # finest_scale=28: boxes with sqrt(area)<28 → P2 (stride 2).
-                # Thin bands 119×9=1071px² → sqrt=32 > 28 → P3 (stride 4), no small
-                # Boxes ≤8px height with stride 2 → 4 cells vertically, sufficient receptive field.
-                "finest_scale": 28,
+                # COCO-style split: boxes with sqrt(area) < 32 go to P2.
+                "finest_scale": 32,
             },
             "bbox_head": [
                 {
@@ -630,7 +640,8 @@ def _build_mmdet_cfg(
         "data_root": str(cfg.paths.project_root) + "/",
         "ann_file": str(train_ann_path),
         "data_prefix": {"img": "data/images/train/"},
-        "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+        # Filter 1px boxes to keep CIoU numerically stable while retaining empty images.
+        "filter_cfg": {"filter_empty_gt": False, "min_size": 2},
         "pipeline": train_pipeline,
     }
 
