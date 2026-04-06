@@ -459,7 +459,6 @@ def _build_mmdet_cfg(
             "mean": [123.675, 116.28, 103.53],
             "std": [58.395, 57.12, 57.375],
             "bgr_to_rgb": True,
-            "pad_size_divisor": 32,
         },
         "backbone": backbone,
         "neck": neck,
@@ -609,12 +608,6 @@ def _build_mmdet_cfg(
         (int(img_w * 1.15), int(img_h * 1.15)),
         (int(img_w * 1.3), int(img_h * 1.3)),
     ]
-    tta_scales = [
-        (int(img_w * 0.9), int(img_h * 0.9)),
-        (int(img_w), int(img_h)),
-        (int(img_w * 1.1), int(img_h * 1.1)),
-    ]
-
     common_aug = [
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
@@ -648,21 +641,8 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "Pad", "size_divisor": 32},
         {"type": "PackDetInputs",
          "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
-    ]
-    tta_pipeline = [
-        {"type": "LoadImageFromFile"},
-        {"type": "Pad", "size_divisor": 32},
-        {"type": "TestTimeAug", "transforms": [
-            [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
-            [{"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
-             {"type": "RandomFlip", "prob": 1.0, "direction": "horizontal"}],
-            [{"type": "PackDetInputs",
-              "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape",
-                            "scale_factor", "flip", "flip_direction")}],
-        ]},
     ]
 
     # AMP can fail in Cascade RPN proposal generation due to a known dtype mismatch
@@ -702,12 +682,6 @@ def _build_mmdet_cfg(
         "custom_imports": {"imports": ["mmpretrain.models"], "allow_failed_imports": False},
         "work_dir": str(work_dir),
         "model": model,
-        "tta_model": {
-            "type": "DetTTAModel",
-            "tta_cfg": {"nms": {"type": "nms", "iou_threshold": 0.5},
-                        "max_per_img": max_test_dets},
-        },
-        "tta_pipeline": tta_pipeline,
         "train_dataloader": {
             "batch_size": int(cfg.train.batch_size),
             "num_workers": int(cfg.train.num_workers),
