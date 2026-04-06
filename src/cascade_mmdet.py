@@ -235,6 +235,29 @@ def _build_adaptive_bbox_losses(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], T
     return rpn_loss_bbox, roi_stage_losses, summary
 
 
+def _build_adaptive_rcnn_iou_thresholds(coco: Dict[str, Any]) -> Tuple[Tuple[float, float, float], str]:
+    stats = _analyze_bbox_distribution(coco)
+    small_ratio = float(stats.get("small_ratio", 0.0))
+    elongated_ratio = float(stats.get("elongated_ratio", 0.0))
+    large_ratio = float(stats.get("large_ratio", 0.0))
+
+    # Si predominan small/elongated, relajamos IoU para mejorar recall de positivos.
+    # Si sube la proporcion de cajas grandes, recuperamos un poco de rigor para precision.
+    relax = min(0.10, 0.06 * small_ratio + 0.05 * elongated_ratio)
+    tighten = min(0.03, 0.05 * large_ratio)
+
+    stage1 = max(0.40, min(0.55, 0.50 - relax + tighten))
+    stage2 = max(stage1 + 0.08, min(0.65, 0.60 - 0.85 * relax + 0.8 * tighten))
+    stage3 = max(stage2 + 0.08, min(0.75, 0.70 - 0.70 * relax + 0.9 * tighten))
+
+    thresholds = (round(stage1, 3), round(stage2, 3), round(stage3, 3))
+    summary = (
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f}, "
+        f"rcnn_iou={thresholds}"
+    )
+    return thresholds, summary
+
+
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
     if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
@@ -454,6 +477,8 @@ def _build_mmdet_cfg(
 
     backbone, neck = _build_backbone_and_neck(cfg.model.architecture, cfg.model.pretrained_weights)
     rpn_loss_bbox, roi_stage_losses, adaptive_loss_summary = _build_adaptive_bbox_losses(coco)
+    rcnn_iou_thresholds, adaptive_rcnn_summary = _build_adaptive_rcnn_iou_thresholds(coco)
+    stage1_iou, stage2_iou, stage3_iou = rcnn_iou_thresholds
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
@@ -599,9 +624,9 @@ def _build_mmdet_cfg(
                 {
                     "assigner": {
                         "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.5,
-                        "neg_iou_thr": 0.5,
-                        "min_pos_iou": 0.5,
+                        "pos_iou_thr": stage1_iou,
+                        "neg_iou_thr": stage1_iou,
+                        "min_pos_iou": stage1_iou,
                         "match_low_quality": False,
                         "ignore_iof_thr": -1,
                     },
@@ -618,9 +643,9 @@ def _build_mmdet_cfg(
                 {
                     "assigner": {
                         "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.6,
-                        "neg_iou_thr": 0.6,
-                        "min_pos_iou": 0.6,
+                        "pos_iou_thr": stage2_iou,
+                        "neg_iou_thr": stage2_iou,
+                        "min_pos_iou": stage2_iou,
                         "match_low_quality": False,
                         "ignore_iof_thr": -1,
                     },
@@ -637,9 +662,9 @@ def _build_mmdet_cfg(
                 {
                     "assigner": {
                         "type": "MaxIoUAssigner",
-                        "pos_iou_thr": 0.7,
-                        "neg_iou_thr": 0.7,
-                        "min_pos_iou": 0.7,
+                        "pos_iou_thr": stage3_iou,
+                        "neg_iou_thr": stage3_iou,
+                        "min_pos_iou": stage3_iou,
                         "match_low_quality": False,
                         "ignore_iof_thr": -1,
                     },
@@ -953,6 +978,7 @@ def _build_mmdet_cfg(
     }
 
     print(f"[cascade] adaptive bbox losses -> {adaptive_loss_summary}")
+    print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
 
     return runtime_cfg
 
