@@ -338,13 +338,15 @@ def _build_mmdet_cfg(
                 },
                 "out_channels": 256,
                 "featmap_strides": [2, 4, 8, 16, 32],
+                "finest_scale": 112,
             },
             "bbox_head": [
                 {
-                    "type": "Shared2FCBBoxHead",
+                    "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
+                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -361,10 +363,11 @@ def _build_mmdet_cfg(
                     "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
-                    "type": "Shared2FCBBoxHead",
+                    "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
+                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -381,10 +384,11 @@ def _build_mmdet_cfg(
                     "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
                 },
                 {
-                    "type": "Shared2FCBBoxHead",
+                    "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
+                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -493,7 +497,7 @@ def _build_mmdet_cfg(
             "rpn": {
                 "nms_pre": 6000,
                 "max_per_img": int(cfg.model.detections_per_img),
-                "nms": {"type": "nms", "iou_threshold": 0.7},
+                "nms": {"type": "nms", "iou_threshold": 0.65},
                 "min_bbox_size": 0,
             },
             "rcnn": {
@@ -509,9 +513,9 @@ def _build_mmdet_cfg(
     }
 
     multiscale_train_scales = [
-        (int(img_w * 0.8), int(img_h * 0.8)),
         (int(img_w), int(img_h)),
         (int(img_w * 1.15), int(img_h * 1.15)),
+        (int(img_w * 1.3), int(img_h * 1.3)),
     ]
     tta_scales = [
         (int(img_w * 0.9), int(img_h * 0.9)),
@@ -524,6 +528,7 @@ def _build_mmdet_cfg(
         {"type": "LoadAnnotations", "with_bbox": True},
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
+        {"type": "RandomFlip", "prob": 0.2, "direction": ["vertical"]},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
