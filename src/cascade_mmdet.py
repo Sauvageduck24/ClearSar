@@ -432,7 +432,7 @@ def _build_mmdet_cfg(
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
-    speed_mode = "fast"
+    speed_mode = "quality"
 
     if speed_mode == "fast":
         # Keep proposal counts bounded to avoid expensive RPN/ROI stages with little AP gain.
