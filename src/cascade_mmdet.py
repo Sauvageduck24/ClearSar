@@ -531,6 +531,9 @@ def _build_mmdet_cfg(
     inner_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
+        # CopyPaste needs source and destination samples to share the same spatial size.
+        # Force a fixed pre-mix canvas to avoid shape mismatches in mask composition.
+        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": False},
     ]
     train_pipeline = [
         {"type": "CopyPaste", "max_num_pasted": 4, "paste_by_box": True},
