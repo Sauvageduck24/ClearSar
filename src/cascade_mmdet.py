@@ -525,33 +525,22 @@ def _build_mmdet_cfg(
          "saturation_range": (1.0, 1.0), "hue_delta": 0},
     ]
 
-    # CopyPaste with paste_by_box=True works without instance segmentation masks.
-    # The dataset has no segmentation annotations so we use bbox-based paste.
-    # MultiImageMixDataset supplies the second image needed for the mix.
-    inner_pipeline = [
+    # Keep a single-image pipeline for stability with bbox-only annotations.
+    # CopyPaste on MultiImageMixDataset can be brittle depending on sample shapes/types.
+    train_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
-        # CopyPaste needs source and destination samples to share the same spatial size.
-        # Force a fixed pre-mix canvas to avoid shape mismatches in mask composition.
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": False},
-    ]
-    train_pipeline = [
-        {"type": "CopyPaste", "max_num_pasted": 4, "paste_by_box": True},
         *common_aug,
         {"type": "PackDetInputs"},
     ]
 
-    train_dataset: Dict[str, Any] = {
-        "type": "MultiImageMixDataset",
-        "dataset": {
-            "type": "CocoDataset",
-            "metainfo": {"classes": class_names},
-            "data_root": str(cfg.paths.project_root) + "/",
-            "ann_file": str(train_ann_path),
-            "data_prefix": {"img": "data/images/train/"},
-            "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
-            "pipeline": inner_pipeline,
-        },
+    train_dataset = {
+        "type": "CocoDataset",
+        "metainfo": {"classes": class_names},
+        "data_root": str(cfg.paths.project_root) + "/",
+        "ann_file": str(train_ann_path),
+        "data_prefix": {"img": "data/images/train/"},
+        "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
         "pipeline": train_pipeline,
     }
 
