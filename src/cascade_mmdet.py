@@ -161,8 +161,8 @@ def _build_adaptive_bbox_losses(
     large_ratio = float(stats.get("large_ratio", 0.0))
 
     # FIX: RPN loss must be SmoothL1 — RPNHead predicts deltas (dx,dy,dw,dh), not decoded boxes.
-    # GIoULoss/CIoULoss require absolute coordinates (reg_decoded_bbox=True) which RPNHead
-    # does NOT support. Using them here causes NaN gradients or a runtime error.
+    # GIoULoss requires absolute coordinates (reg_decoded_bbox=True), which the RPN head
+    # does NOT use. RPN keeps SmoothL1 because it predicts deltas, not decoded boxes.
     rpn_loss_bbox: Dict[str, Any] = {
         "type": "SmoothL1Loss",
         "loss_weight": 1.0,
@@ -630,6 +630,8 @@ def _build_mmdet_cfg(
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
         *common_aug,
+        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
+        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "PackDetInputs"},
     ]
 
@@ -647,11 +649,16 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
+        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
+        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "PackDetInputs",
          "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
     ]
     tta_pipeline = [
         {"type": "LoadImageFromFile"},
+        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
+        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
+        {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "TestTimeAug", "transforms": [
             [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
             [{"type": "RandomFlip", "prob": 0.0, "direction": "horizontal"},
