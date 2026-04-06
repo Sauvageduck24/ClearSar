@@ -97,6 +97,122 @@ def _coco_has_instance_masks(coco: Dict[str, Any]) -> bool:
     return False
 
 
+def _analyze_bbox_distribution(coco: Dict[str, Any]) -> Dict[str, float]:
+    images = coco.get("images", [])
+    annotations = coco.get("annotations", [])
+    if not isinstance(images, list) or not isinstance(annotations, list):
+        return {
+            "num_boxes": 0.0,
+            "small_ratio": 0.0,
+            "elongated_ratio": 0.0,
+            "large_ratio": 0.0,
+        }
+
+    image_area_by_id: Dict[int, float] = {}
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        img_id = img.get("id")
+        w = img.get("width")
+        h = img.get("height")
+        if img_id is None:
+            continue
+        try:
+            img_id_i = int(img_id)
+            w_f = float(w)
+            h_f = float(h)
+        except (TypeError, ValueError):
+            continue
+        if w_f <= 0 or h_f <= 0:
+            continue
+        image_area_by_id[img_id_i] = w_f * h_f
+
+    num_boxes = 0
+    small = 0
+    elongated = 0
+    large = 0
+
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        bbox = ann.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) < 4:
+            continue
+        try:
+            bw = float(bbox[2])
+            bh = float(bbox[3])
+            img_id = int(ann.get("image_id"))
+        except (TypeError, ValueError):
+            continue
+        if bw <= 0 or bh <= 0:
+            continue
+
+        img_area = image_area_by_id.get(img_id)
+        if img_area is None or img_area <= 0:
+            continue
+
+        num_boxes += 1
+        rel_area = (bw * bh) / img_area
+        long_short = max(bw / bh, bh / bw)
+
+        if rel_area < 0.0025:
+            small += 1
+        if long_short >= 8.0:
+            elongated += 1
+        if rel_area >= 0.15:
+            large += 1
+
+    if num_boxes == 0:
+        return {
+            "num_boxes": 0.0,
+            "small_ratio": 0.0,
+            "elongated_ratio": 0.0,
+            "large_ratio": 0.0,
+        }
+
+    denom = float(num_boxes)
+    return {
+        "num_boxes": float(num_boxes),
+        "small_ratio": small / denom,
+        "elongated_ratio": elongated / denom,
+        "large_ratio": large / denom,
+    }
+
+
+def _build_adaptive_bbox_losses(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]], str]:
+    stats = _analyze_bbox_distribution(coco)
+    small_ratio = float(stats.get("small_ratio", 0.0))
+    elongated_ratio = float(stats.get("elongated_ratio", 0.0))
+    large_ratio = float(stats.get("large_ratio", 0.0))
+
+    # Ajuste automático suave: más peso cuando predominan cajas pequeñas/elongadas/grandes.
+    rpn_weight = min(20.0, 8.0 + 8.0 * small_ratio + 6.0 * elongated_ratio + 4.0 * large_ratio)
+    stage1_weight = min(20.0, 8.0 + 10.0 * small_ratio + 6.0 * elongated_ratio)
+    stage2_weight = min(20.0, 8.0 + 6.0 * small_ratio + 8.0 * elongated_ratio + 4.0 * large_ratio)
+    stage3_weight = min(8.0, 1.5 + 2.0 * elongated_ratio + 3.0 * large_ratio)
+
+    rpn_loss_bbox: Dict[str, Any] = {
+        "type": "GIoULoss",
+        "loss_weight": round(rpn_weight, 4),
+    }
+
+    stage3_loss_type = "CIoULoss" if elongated_ratio >= 0.2 else "GIoULoss"
+    roi_stage_losses = (
+        {"type": "CIoULoss", "loss_weight": round(stage1_weight, 4)},
+        {"type": "CIoULoss", "loss_weight": round(stage2_weight, 4)},
+        {"type": stage3_loss_type, "loss_weight": round(stage3_weight, 4)},
+    )
+
+    summary = (
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, large={large_ratio:.3f}, "
+        f"rpn={rpn_loss_bbox['type']}@{rpn_loss_bbox['loss_weight']:.3f}, "
+        f"roi=[{roi_stage_losses[0]['type']}@{roi_stage_losses[0]['loss_weight']:.3f}, "
+        f"{roi_stage_losses[1]['type']}@{roi_stage_losses[1]['loss_weight']:.3f}, "
+        f"{roi_stage_losses[2]['type']}@{roi_stage_losses[2]['loss_weight']:.3f}]"
+    )
+    return rpn_loss_bbox, roi_stage_losses, summary
+
+
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
     if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
@@ -168,7 +284,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
         # num_outs=5 → FPN adds one extra coarse level → output strides [4, 8, 16, 32, 64].
         # AnchorGenerator and RoI extractor are set accordingly below.
         neck = {
-            "type": "FPN",
+            "type": "PAFPN",
             "in_channels": [192, 384, 768, 1536],
             "out_channels": 256,
             "num_outs": 5,               # FIX: was 6; 5 levels → strides [4,8,16,32,64]
@@ -191,7 +307,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             },
         }
         neck = {
-            "type": "FPN",
+            "type": "PAFPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
             "num_outs": 5,               # FIX: was 6
@@ -216,7 +332,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             },
         }
         neck = {
-            "type": "FPN",
+            "type": "PAFPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
             "num_outs": 5,               # FIX: was 6
@@ -242,7 +358,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             },
         }
         neck = {
-            "type": "FPN",
+            "type": "PAFPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
             "num_outs": 5,               # FIX: was 6
@@ -289,7 +405,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             },
         }
         neck = {
-            "type": "HRFPN",
+            "type": "PAFPN",
             "in_channels": [40, 80, 160, 320],
             "out_channels": 256,
             "num_outs": 5,               # FIX: was 6
@@ -302,6 +418,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
 
 def _build_mmdet_cfg(
     cfg: Config,
+    coco: Dict[str, Any],
     train_ann_path: Path,
     val_ann_path: Path,
     work_dir: Path,
@@ -314,6 +431,7 @@ def _build_mmdet_cfg(
         img_h, img_w = cfg.train.image_size
 
     backbone, neck = _build_backbone_and_neck(cfg.model.architecture, cfg.model.pretrained_weights)
+    rpn_loss_bbox, roi_stage_losses, adaptive_loss_summary = _build_adaptive_bbox_losses(coco)
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
@@ -348,7 +466,7 @@ def _build_mmdet_cfg(
                 "target_stds": [1.0, 1.0, 1.0, 1.0],
             },
             "loss_cls": {"type": "CrossEntropyLoss", "use_sigmoid": True, "loss_weight": 1.0},
-            "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
+            "loss_bbox": rpn_loss_bbox,
         },
         "roi_head": {
             "type": "CascadeRoIHead",
@@ -388,7 +506,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
+                    "loss_bbox": roi_stage_losses[0],
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
@@ -408,7 +526,7 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "CIoULoss", "loss_weight": 10.0},
+                    "loss_bbox": roi_stage_losses[1],
                 },
                 {
                     "type": "Shared4Conv1FCBBoxHead",
@@ -428,19 +546,15 @@ def _build_mmdet_cfg(
                         "use_sigmoid": False,
                         "loss_weight": 1.0,
                     },
-                    "loss_bbox": {"type": "GIoULoss", "loss_weight": 2.0},
+                    "loss_bbox": roi_stage_losses[2],
                 },
             ],
         },
         "train_cfg": {
             "rpn": {
                 "assigner": {
-                    "type": "MaxIoUAssigner",
-                    "pos_iou_thr": 0.5,
-                    "neg_iou_thr": 0.3,
-                    "min_pos_iou": 0.3,
-                    "match_low_quality": True,   # critical for thin/small boxes
-                    "ignore_iof_thr": -1,
+                    "type": "ATSSAssigner",
+                    "topk": 9,
                 },
                 "sampler": {
                     "type": "RandomSampler",
@@ -816,6 +930,8 @@ def _build_mmdet_cfg(
         },
     }
 
+    print(f"[cascade] adaptive bbox losses -> {adaptive_loss_summary}")
+
     return runtime_cfg
 
 
@@ -888,6 +1004,7 @@ def train_cascade_rcnn(cfg: Config) -> None:
 
     mmdet_cfg = _build_mmdet_cfg(
         cfg=cfg,
+        coco=coco,
         train_ann_path=train_ann_path,
         val_ann_path=val_ann_path,
         work_dir=work_dir,
