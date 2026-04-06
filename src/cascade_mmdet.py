@@ -206,14 +206,13 @@ def _build_adaptive_rpn_anchor_generator(coco: Dict[str, Any]) -> Tuple[Dict[str
     small_ratio = float(stats.get("small_ratio", 0.0))
     elongated_ratio = float(stats.get("elongated_ratio", 0.0))
 
-    # Keep elongated priors for SAR streaks but avoid extremely sparse ratios (33/50)
-    # that explode anchors-per-location and heavily slow down RPN.
-    ratios: List[float] = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+    # Keep priors for elongated SAR targets, but cap anchors-per-location to keep RPN fast.
+    ratios: List[float] = [0.2, 0.5, 1.0, 2.0, 5.0]
     if elongated_ratio >= 0.30:
-        ratios.append(20.0)
+        ratios.append(10.0)
 
-    # Use one or two scales depending on small-object prevalence.
-    scales = [4, 8] if small_ratio >= 0.25 else [8]
+    # Prefer one scale for throughput; enable an extra small scale only when needed.
+    scales = [4, 8] if small_ratio >= 0.45 else [8]
 
     anchor_generator = {
         "type": "AnchorGenerator",
@@ -433,6 +432,19 @@ def _build_mmdet_cfg(
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
+    speed_mode = "fast"
+
+    if speed_mode == "fast":
+        # Keep proposal counts bounded to avoid expensive RPN/ROI stages with little AP gain.
+        train_rpn_nms_pre = 1200
+        test_rpn_nms_pre = 1500
+        max_train_proposals = min(int(cfg.model.detections_per_img), 300)
+        max_test_dets = min(int(cfg.model.detections_per_img), 300)
+    else:
+        train_rpn_nms_pre = 2500
+        test_rpn_nms_pre = 2500
+        max_train_proposals = int(cfg.model.detections_per_img)
+        max_test_dets = int(cfg.model.detections_per_img)
 
     model = {
         "type": "CascadeRCNN",
@@ -537,8 +549,8 @@ def _build_mmdet_cfg(
                 "debug": False,
             },
             "rpn_proposal": {
-                "nms_pre": 2500,
-                "max_per_img": int(cfg.model.detections_per_img),
+                "nms_pre": train_rpn_nms_pre,
+                "max_per_img": max_train_proposals,
                 "nms": {"type": "nms", "iou_threshold": 0.65},
                 "min_bbox_size": 0,
             },
@@ -574,24 +586,30 @@ def _build_mmdet_cfg(
         },
         "test_cfg": {
             "rpn": {
-                "nms_pre": 2500,
-                "max_per_img": int(cfg.model.detections_per_img),
+                "nms_pre": test_rpn_nms_pre,
+                "max_per_img": max_test_dets,
                 "nms": {"type": "nms", "iou_threshold": 0.65},
                 "min_bbox_size": 0,
             },
             "rcnn": {
                 "score_thr": 0.05,
                 "nms": {"type": "soft_nms", "iou_threshold": 0.5, "min_score": 0.001},
-                "max_per_img": int(cfg.model.detections_per_img),
+                "max_per_img": max_test_dets,
             },
         },
     }
 
-    multiscale_train_scales = [
-        (int(img_w), int(img_h)),
-        (int(img_w * 1.15), int(img_h * 1.15)),
-        (int(img_w * 1.3), int(img_h * 1.3)),
-    ]
+    if speed_mode == "fast":
+        multiscale_train_scales = [
+            (int(img_w), int(img_h)),
+            (int(img_w * 1.1), int(img_h * 1.1)),
+        ]
+    else:
+        multiscale_train_scales = [
+            (int(img_w), int(img_h)),
+            (int(img_w * 1.15), int(img_h * 1.15)),
+            (int(img_w * 1.3), int(img_h * 1.3)),
+        ]
     tta_scales = [
         (int(img_w * 0.9), int(img_h * 0.9)),
         (int(img_w), int(img_h)),
@@ -602,11 +620,14 @@ def _build_mmdet_cfg(
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
-        {"type": "RandomShift", "max_shift_px": 32},
-        {"type": "PhotoMetricDistortion",
-         "brightness_delta": 20, "contrast_range": (0.8, 1.2),
-         "saturation_range": (1.0, 1.0), "hue_delta": 0},
     ]
+    if speed_mode == "quality":
+        common_aug.extend([
+            {"type": "RandomShift", "max_shift_px": 32},
+            {"type": "PhotoMetricDistortion",
+             "brightness_delta": 20, "contrast_range": (0.8, 1.2),
+             "saturation_range": (1.0, 1.0), "hue_delta": 0},
+        ])
 
     # Keep a single-image pipeline for stability with bbox-only annotations.
     # CopyPaste on MultiImageMixDataset can be brittle depending on sample shapes/types.
@@ -685,7 +706,7 @@ def _build_mmdet_cfg(
         "tta_model": {
             "type": "DetTTAModel",
             "tta_cfg": {"nms": {"type": "nms", "iou_threshold": 0.5},
-                        "max_per_img": int(cfg.model.detections_per_img)},
+                        "max_per_img": max_test_dets},
         },
         "tta_pipeline": tta_pipeline,
         "train_dataloader": {
@@ -746,7 +767,7 @@ def _build_mmdet_cfg(
         ],
         "default_hooks": {
             "timer": {"type": "IterTimerHook"},
-            "logger": {"type": "LoggerHook", "interval": 200},
+            "logger": {"type": "LoggerHook", "interval": 50},
             "param_scheduler": {"type": "ParamSchedulerHook"},
             "checkpoint": {
                 "type": "CheckpointHook", "interval": 1,
@@ -774,6 +795,11 @@ def _build_mmdet_cfg(
     print(f"[cascade] adaptive bbox losses   -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
     print(f"[cascade] adaptive rpn anchors    -> {adaptive_anchor_summary}")
+    print(f"[cascade] speed mode              -> {speed_mode}")
+    print(
+        f"[cascade] proposals train/test    -> "
+        f"nms_pre={train_rpn_nms_pre}/{test_rpn_nms_pre}, max={max_train_proposals}/{max_test_dets}"
+    )
     print(f"[cascade] progress bar            -> {'enabled' if use_progress_bar else 'disabled'}")
     print(f"[cascade] AMP={'enabled (fp16)' if use_amp else 'disabled'}")
 
