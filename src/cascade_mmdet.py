@@ -594,10 +594,10 @@ def _build_mmdet_cfg(
                 "nms_pre": test_rpn_nms_pre,
                 "max_per_img": max_test_dets,
                 "nms": {"type": "nms", "iou_threshold": 0.65},
-                "min_bbox_size": 0,
+                "min_bbox_size": 2,
             },
             "rcnn": {
-                "score_thr": 0.0,
+                "score_thr": 0.05,
                 "nms": {"type": "soft_nms", "iou_threshold": 0.5, "min_score": 0.001},
                 "max_per_img": max_test_dets,
             },
@@ -630,7 +630,6 @@ def _build_mmdet_cfg(
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
         *common_aug,
-        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
         {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "PackDetInputs"},
     ]
@@ -649,15 +648,12 @@ def _build_mmdet_cfg(
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
         {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "PackDetInputs",
          "meta_keys": ("img_id", "img_path", "ori_shape", "img_shape", "scale_factor")},
     ]
     tta_pipeline = [
         {"type": "LoadImageFromFile"},
-        {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
-        {"type": "Pad", "pad_to_square": True, "pad_val": {"img": 0}},
         {"type": "Normalize", "mean": [123.675, 116.28, 103.53], "std": [58.395, 57.12, 57.375], "to_rgb": True},
         {"type": "TestTimeAug", "transforms": [
             [{"type": "Resize", "scale": s, "keep_ratio": True} for s in tta_scales],
