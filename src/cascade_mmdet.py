@@ -155,20 +155,19 @@ def _build_adaptive_bbox_losses(
         "beta": 1.0 / 9.0,
     }
 
-    # FIX: loss_weight capped at 5.0 for RoI stages.
-    # The previous formula produced weights of ~16 with elongated_ratio~0.80 (real value
-    # for this dataset). That's 16x the cls_loss weight=1.0, which makes the model ignore
-    # classification entirely — exactly the stagnation pattern observed in training.
-    # Literature standard: 1.0–2.0, practical competition max: ~5.0.
-    stage_loss_type = "CIoULoss" if elongated_ratio >= 0.20 else "GIoULoss"
-    stage1_weight = round(min(5.0, 1.5 + 1.5 * small_ratio + 1.0 * elongated_ratio), 4)
-    stage2_weight = round(min(5.0, 1.5 + 1.0 * small_ratio + 1.5 * elongated_ratio), 4)
-    stage3_weight = round(min(4.0, 1.0 + 0.5 * elongated_ratio + 1.0 * large_ratio), 4)
+    # FIX: use SmoothL1 for the three Cascade stages as a stability fallback.
+    # On this SAR dataset, the thin boxes plus aggressive augmentation can make
+    # decoded IoU losses unstable early in training and poison the whole loss.
+    # SmoothL1 keeps the regression path bounded and is the safest baseline here.
+    stage_loss_type = "SmoothL1Loss"
+    stage1_weight = round(min(2.0, 1.0 + 0.4 * small_ratio + 0.2 * elongated_ratio), 4)
+    stage2_weight = round(min(2.0, 1.0 + 0.3 * small_ratio + 0.3 * elongated_ratio), 4)
+    stage3_weight = round(min(2.0, 1.0 + 0.2 * elongated_ratio + 0.2 * large_ratio), 4)
 
     roi_stage_losses = (
-        {"type": stage_loss_type, "loss_weight": stage1_weight},
-        {"type": stage_loss_type, "loss_weight": stage2_weight},
-        {"type": stage_loss_type, "loss_weight": stage3_weight},
+        {"type": stage_loss_type, "loss_weight": stage1_weight, "beta": 1.0 / 9.0},
+        {"type": stage_loss_type, "loss_weight": stage2_weight, "beta": 1.0 / 9.0},
+        {"type": stage_loss_type, "loss_weight": stage3_weight, "beta": 1.0 / 9.0},
     )
 
     summary = (
