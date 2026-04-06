@@ -146,7 +146,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [192, 384, 768, 1536],
             "out_channels": 256,
-            "num_outs": 5,
+            "num_outs": 6,
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -170,7 +170,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 5,
+            "num_outs": 6,
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -195,7 +195,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 5,
+            "num_outs": 6,
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -221,7 +221,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 5,
+            "num_outs": 6,
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -268,7 +268,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "HRFPN",
             "in_channels": [40, 80, 160, 320],
             "out_channels": 256,
-            "num_outs": 5,
+            "num_outs": 6,
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -315,7 +315,7 @@ def _build_mmdet_cfg(
                 "type": "AnchorGenerator",
                 "scales": [4, 8],
                 "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
-                "strides": [4, 8, 16, 32, 64],
+                "strides": [2, 4, 8, 16, 32, 64],
             },
             "bbox_coder": {
                 "type": "DeltaXYWHBBoxCoder",
@@ -333,18 +333,18 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (4, 16),
+                    "output_size": (7, 14),
                     "sampling_ratio": 2,
                 },
                 "out_channels": 256,
-                "featmap_strides": [4, 8, 16, 32],
+                "featmap_strides": [2, 4, 8, 16, 32],
             },
             "bbox_head": [
                 {
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 16),
+                    "roi_feat_size": (7, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -364,7 +364,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 16),
+                    "roi_feat_size": (7, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -384,7 +384,7 @@ def _build_mmdet_cfg(
                     "type": "Shared2FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (4, 16),
+                    "roi_feat_size": (7, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {

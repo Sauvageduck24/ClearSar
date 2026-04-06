@@ -96,23 +96,35 @@ cascade_rcnn_convnext_xl
 cascade_rcnn_resnet101
 cascade_rcnn_resnet50
 
-# DCNv2 (recomendado para objetos deformables/alargados)
-/usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 --epochs 25 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 1e-3
+# ResNet-50 — rápido, baseline limpio
+/usr/bin/python -m src.train --arch cascade_rcnn_resnet50 \
+  --epochs 20 --batch-size 24 --num-workers 8 \
+  --image-size 640 --save-top-k 1 --lr 6e-4
 
-# Swin-L (muy fuerte, pesado)
-/usr/bin/python -m src.train --arch cascade_rcnn_swin_l --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 3e-4
+# ResNet-101 — mejor que R50, buena relación coste/mAP
+/usr/bin/python -m src.train --arch cascade_rcnn_resnet101 \
+  --epochs 20 --batch-size 20 --num-workers 8 \
+  --image-size 640 --save-top-k 1 --lr 5e-4
 
-# HRNet (muy bueno en detalle espacial)
-/usr/bin/python -m src.train --arch cascade_rcnn_hrnet --epochs 15 --batch-size 10 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
+# DCNv2 — el más adecuado para rayas deformables, prueba éste primero
+/usr/bin/python -m src.train --arch cascade_rcnn_dcnv2 \
+  --epochs 20 --batch-size 16 --num-workers 8 \
+  --image-size 1024 --save-top-k 1 --lr 2e-4
 
-# ConvNeXt-XL (tu baseline actual)
-/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl --epochs 15 --batch-size 8 --num-workers 32 --image-size 512 --save-top-k 1 --lr 3e-4
+# HRNet — bueno para mAP_s por alta resolución espacial
+/usr/bin/python -m src.train --arch cascade_rcnn_hrnet \
+  --epochs 20 --batch-size 14 --num-workers 8 \
+  --image-size 1024 --save-top-k 1 --lr 3.5e-4
 
-# ResNet-101 (baseline robusto)
-/usr/bin/python -m src.train --arch cascade_rcnn_resnet101 --epochs 15 --batch-size 12 --num-workers 32 --image-size 512 --save-top-k 1 --lr 5e-4
+# Swin-L — potente pero lento, solo si tienes tiempo
+/usr/bin/python -m src.train --arch cascade_rcnn_swin_l \
+  --epochs 20 --batch-size 6 --num-workers 8 \
+  --image-size 640 --save-top-k 1 --lr 1.5e-4
 
-# ResNet-50 (rápido para comparar)
-/usr/bin/python -m src.train --arch cascade_rcnn_resnet50 --epochs 15 --batch-size 16 --num-workers 32 --image-size 512 --save-top-k 1 --lr 1e-3
+# ConvNeXt-XL — tu baseline actual
+/usr/bin/python -m src.train --arch cascade_rcnn_convnext_xl \
+  --epochs 20 --batch-size 6 --num-workers 8 \
+  --image-size 640 --save-top-k 1 --lr 1.5e-4
 
 # ENSEMBLE
 
