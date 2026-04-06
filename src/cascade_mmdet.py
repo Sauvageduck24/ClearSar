@@ -74,7 +74,6 @@ def _extract_class_names_from_coco(coco: Dict[str, Any]) -> Tuple[str, ...]:
     if not names:
         return ("rfi",)
 
-    # Keep insertion order while removing duplicates.
     uniq = list(dict.fromkeys(names))
     return tuple(uniq)
 
@@ -124,12 +123,16 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
     pretrained_ckpt = _resolve_pretrained_checkpoint(arch, pretrained_weights)
 
     if arch == CASCADE_ARCH_SWIN_L:
+        # FIX: window_size=12 was pretrained at 384px.
+        # At 512px input the stage-1 feature map is 512/4=128px.
+        # 128 % 12 != 0 → broken positional encoding, silent degradation.
+        # window_size=16 → 128/16=8 ✓  (or 8 → 128/8=16 ✓)
         backbone = {
             "type": "SwinTransformer",
             "embed_dims": 192,
             "depths": [2, 2, 18, 2],
             "num_heads": [6, 12, 24, 48],
-            "window_size": 12,
+            "window_size": 16,           # FIX: was 12, must divide 128 evenly at 512px input
             "mlp_ratio": 4,
             "qkv_bias": True,
             "drop_path_rate": 0.10,
@@ -142,18 +145,20 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
                 "checkpoint": pretrained_ckpt,
             },
         }
+        # FIX: Swin-L outputs at strides [4, 8, 16, 32].
+        # num_outs=5 → FPN adds one extra coarse level → output strides [4, 8, 16, 32, 64].
+        # AnchorGenerator and RoI extractor are set accordingly below.
         neck = {
             "type": "FPN",
             "in_channels": [192, 384, 768, 1536],
             "out_channels": 256,
-            "num_outs": 6,
+            "num_outs": 5,               # FIX: was 6; 5 levels → strides [4,8,16,32,64]
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
     if arch == CASCADE_ARCH_CONVNEXT_XL:
         backbone = {
-            # ConvNeXt is provided by MMPretrain in many MMDet installs.
             "type": "mmpretrain.ConvNeXt",
             "arch": "xlarge",
             "out_indices": [0, 1, 2, 3],
@@ -170,7 +175,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 6,
+            "num_outs": 5,               # FIX: was 6
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -195,7 +200,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 6,
+            "num_outs": 5,               # FIX: was 6
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -221,7 +226,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "FPN",
             "in_channels": [256, 512, 1024, 2048],
             "out_channels": 256,
-            "num_outs": 6,
+            "num_outs": 5,               # FIX: was 6
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -268,7 +273,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "type": "HRFPN",
             "in_channels": [40, 80, 160, 320],
             "out_channels": 256,
-            "num_outs": 6,
+            "num_outs": 5,               # FIX: was 6
         }
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
@@ -290,10 +295,7 @@ def _build_mmdet_cfg(
 
     backbone, neck = _build_backbone_and_neck(cfg.model.architecture, cfg.model.pretrained_weights)
 
-    # Dataset statistics show tiny boxes and extreme aspect ratios; use aggressive
-    # anchor ratios and small scales to increase recall on thin artifacts.
     num_fg_classes = len(class_names)
-
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
 
     model = {
@@ -314,8 +316,11 @@ def _build_mmdet_cfg(
             "anchor_generator": {
                 "type": "AnchorGenerator",
                 "scales": [4, 8],
-                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
-                "strides": [2, 4, 8, 16, 32, 64],
+                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 33.0, 50.0],
+                # FIX: was [2, 4, 8, 16, 32, 64] — stride 2 doesn't exist in FPN output
+                # (ResNet/ConvNeXt/Swin all output finest at stride 4).
+                # 5 strides must match num_outs=5 in FPN above.
+                "strides": [4, 8, 16, 32, 64],
             },
             "bbox_coder": {
                 "type": "DeltaXYWHBBoxCoder",
@@ -333,19 +338,23 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {
                     "type": "RoIAlign",
-                    "output_size": (2, 14),
+                    "output_size": (14, 14),
                     "sampling_ratio": 2,
                 },
                 "out_channels": 256,
-                "featmap_strides": [2, 4, 8, 16, 32],
-                "finest_scale": 112,
+                # FIX: was [2, 4, 8, 16, 32] — must match actual FPN output strides.
+                # With num_outs=5 and ResNet backbone: FPN outputs at [4, 8, 16, 32, 64].
+                # finest_scale=56 → boxes with sqrt(area) < 56 go to P2 (stride 4),
+                # which is fine for our thin bands (e.g. 119×9=1071px² → sqrt=32 < 56 → P2).
+                "featmap_strides": [4, 8, 16, 32, 64],
+                "finest_scale": 56,
             },
             "bbox_head": [
                 {
                     "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (2, 14),
+                    "roi_feat_size": (14, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -365,7 +374,7 @@ def _build_mmdet_cfg(
                     "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (2, 14),
+                    "roi_feat_size": (14, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -385,7 +394,7 @@ def _build_mmdet_cfg(
                     "type": "Shared4Conv1FCBBoxHead",
                     "in_channels": 256,
                     "fc_out_channels": 1024,
-                    "roi_feat_size": (2, 14),
+                    "roi_feat_size": (14, 14),
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -410,7 +419,7 @@ def _build_mmdet_cfg(
                     "pos_iou_thr": 0.5,
                     "neg_iou_thr": 0.3,
                     "min_pos_iou": 0.3,
-                    "match_low_quality": True,
+                    "match_low_quality": True,   # critical for thin/small boxes
                     "ignore_iof_thr": -1,
                 },
                 "sampler": {
@@ -498,9 +507,13 @@ def _build_mmdet_cfg(
                 "min_bbox_size": 0,
             },
             "rcnn": {
-                "score_thr": 0.0,
+                # FIX: was 0.0 — keeping every box down to near-zero confidence floods
+                # the evaluator with false positives and degrades precision.
+                # soft_nms min_score=0.001 already filters below that, but score_thr
+                # is the post-NMS threshold. 0.05 is a safe competition default.
+                "score_thr": 0.05,
                 "nms": {
-                    "type": "soft_nms",        # en lugar de "nms"
+                    "type": "soft_nms",
                     "iou_threshold": 0.5,
                     "min_score": 0.001,
                 },
@@ -520,21 +533,49 @@ def _build_mmdet_cfg(
         (int(img_w * 1.1), int(img_h * 1.1)),
     ]
 
-    train_pipeline = [
+    # FIX: CopyPaste is a "mix transform" — it needs two images at once.
+    # In a plain CocoDataset pipeline it silently does nothing because
+    # results['mix_results'] is never populated.
+    # The fix is to split the pipeline: CocoDataset handles only loading,
+    # then MultiImageMixDataset wraps it and supplies the mixed second image,
+    # and the full augmentation pipeline (including CopyPaste) runs on top.
+    #
+    # Pipeline for the inner CocoDataset — only loading, no augmentation:
+    inner_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "LoadAnnotations", "with_bbox": True},
+    ]
+
+    # FIX: RandomCrop with crop_size=(float, float) is not supported in MMDet v3.
+    # RandomCrop.crop_size must be (int_h, int_w). Use explicit pixel sizes here.
+    # We compute a representative crop: 80% of the training image dimensions,
+    # which gives a good balance between seeing full-width RFI bands and cropping.
+    crop_h = max(64, int(img_h * 0.8))
+    crop_w = max(64, int(img_w * 0.8))
+
+    # Full augmentation pipeline (runs inside MultiImageMixDataset):
+    train_pipeline = [
+        # CopyPaste pastes RFI boxes from a second image onto the current one.
+        # Great for mAP_s (more small RFI examples) and mAP_l (more thick blocks).
+        {"type": "CopyPaste", "max_num_pasted": 4},
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
-        {"type": "RandomFlip", "prob": 0.2, "direction": ["vertical"]},
+        # Vertical flip: for horizontal RFI bands this just changes y-position,
+        # which helps the model generalise to bands at different vertical positions.
+        {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
+        {"type": "RandomShift", "max_shift_px": 32},
+        # RandomCrop with explicit int sizes (not float ratios):
+        {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": False},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
             "contrast_range": (0.8, 1.2),
-            "saturation_range": (1.0, 1.0),  # sin cambio de saturación
-            "hue_delta": 0,                   # sin cambio de hue
+            "saturation_range": (1.0, 1.0),
+            "hue_delta": 0,
         },
         {"type": "PackDetInputs"},
     ]
+
     test_pipeline = [
         {"type": "LoadImageFromFile"},
         {"type": "Resize", "scale": (int(img_w), int(img_h)), "keep_ratio": True},
@@ -576,13 +617,21 @@ def _build_mmdet_cfg(
     ]
 
     dataroot = str(cfg.paths.project_root) + "/"
+
+    # FIX: wrap CocoDataset in MultiImageMixDataset so CopyPaste gets two images.
+    # The inner dataset uses only the loading pipeline; all spatial augmentations
+    # (including CopyPaste) run in the outer pipeline managed by MultiImageMixDataset.
     train_dataset: Dict[str, Any] = {
-        "type": "CocoDataset",
-        "metainfo": {"classes": class_names},
-        "data_root": dataroot,
-        "ann_file": str(train_ann_path),
-        "data_prefix": {"img": "data/images/train/"},
-        "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+        "type": "MultiImageMixDataset",
+        "dataset": {
+            "type": "CocoDataset",
+            "metainfo": {"classes": class_names},
+            "data_root": dataroot,
+            "ann_file": str(train_ann_path),
+            "data_prefix": {"img": "data/images/train/"},
+            "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+            "pipeline": inner_pipeline,
+        },
         "pipeline": train_pipeline,
     }
 
@@ -598,7 +647,7 @@ def _build_mmdet_cfg(
         optim_wrapper["paramwise_cfg"] = {
             "decay_rate": 0.9,
             "decay_type": "layer_wise",
-            "num_layers": 12,  # ConvNeXt-XL tiene ~12 bloques
+            "num_layers": 12,
         }
     if cfg.train.use_amp:
         print("[cascade] AMP requested, but disabled for MMDet Cascade stability.")
@@ -699,7 +748,6 @@ def _build_mmdet_cfg(
                 "end": int(cfg.train.epochs),
                 "T_max": int(cfg.train.epochs) - warmup_end,
             },
-
         ],
         "default_hooks": {
             "timer": {"type": "IterTimerHook"},
@@ -737,9 +785,6 @@ def _patch_transformers_nn_nameerror() -> None:
     """
     Work around a known transformers import bug that can raise:
     NameError: name 'nn' is not defined
-
-    This happens when transformers disables torch integration (e.g. strict
-    version gate) but still evaluates type hints referencing nn.Module.
     """
     try:
         import torch
