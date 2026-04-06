@@ -485,7 +485,13 @@ def _build_mmdet_cfg(
 
     # Evita colapso a "todo fondo" cuando hay muchas cajas muy delgadas.
     use_random_crop = not (elongated_ratio >= 0.40)
-    rpn_atss_topk = 18 if elongated_ratio >= 0.40 else 9
+    # Aumentar topk agresivamente si hay muchas elongadas para garantizar positivos RPN
+    if elongated_ratio >= 0.50:
+        rpn_atss_topk = 25
+    elif elongated_ratio >= 0.40:
+        rpn_atss_topk = 20
+    else:
+        rpn_atss_topk = 12
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
@@ -613,8 +619,8 @@ def _build_mmdet_cfg(
                 "sampler": {
                     "type": "RandomSampler",
                     "num": 256,
-                    "pos_fraction": 0.5,
-                    "neg_pos_ub": -1,
+                    "pos_fraction": 0.5,  # 50% positivos garantizados si ATSS los genera
+                    "neg_pos_ub": 3,  # Como máximo 3x negativas (256*0.5 = 128 pos, 384 neg)
                     "add_gt_as_proposals": False,
                 },
                 "allowed_border": -1,
@@ -983,6 +989,10 @@ def _build_mmdet_cfg(
         },
     }
 
+    # Debug: validar que losses no son None
+    assert rpn_loss_bbox is not None and rpn_loss_bbox.get('loss_weight') is not None, "rpn_loss_bbox collapsed to None!"
+    assert roi_stage_losses is not None and len(roi_stage_losses) == 3, "roi_stage_losses collapsed!"
+    
     print(f"[cascade] adaptive bbox losses -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
     print(
@@ -990,6 +1000,8 @@ def _build_mmdet_cfg(
         f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, "
         f"random_crop={use_random_crop}, atss_topk={rpn_atss_topk}"
     )
+    print(f"[cascade] RPN bbox loss -> type={rpn_loss_bbox['type']}, weight={rpn_loss_bbox['loss_weight']}")
+    print(f"[cascade] ROI bbox losses -> {[(l['type'], l['loss_weight']) for l in roi_stage_losses]}")
 
     return runtime_cfg
 
