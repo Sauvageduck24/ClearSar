@@ -476,9 +476,16 @@ def _build_mmdet_cfg(
         img_h, img_w = cfg.train.image_size
 
     backbone, neck = _build_backbone_and_neck(cfg.model.architecture, cfg.model.pretrained_weights)
+    bbox_stats = _analyze_bbox_distribution(coco)
     rpn_loss_bbox, roi_stage_losses, adaptive_loss_summary = _build_adaptive_bbox_losses(coco)
     rcnn_iou_thresholds, adaptive_rcnn_summary = _build_adaptive_rcnn_iou_thresholds(coco)
     stage1_iou, stage2_iou, stage3_iou = rcnn_iou_thresholds
+    small_ratio = float(bbox_stats.get("small_ratio", 0.0))
+    elongated_ratio = float(bbox_stats.get("elongated_ratio", 0.0))
+
+    # Evita colapso a "todo fondo" cuando hay muchas cajas muy delgadas.
+    use_random_crop = not (elongated_ratio >= 0.40)
+    rpn_atss_topk = 18 if elongated_ratio >= 0.40 else 9
 
     num_fg_classes = len(class_names)
     warmup_end = min(5, max(3, int(cfg.train.epochs // 8)))
@@ -601,7 +608,7 @@ def _build_mmdet_cfg(
             "rpn": {
                 "assigner": {
                     "type": "ATSSAssigner",
-                    "topk": 9,
+                    "topk": int(rpn_atss_topk),
                 },
                 "sampler": {
                     "type": "RandomSampler",
@@ -743,8 +750,6 @@ def _build_mmdet_cfg(
         # which helps the model generalise to bands at different vertical positions.
         {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
         {"type": "RandomShift", "max_shift_px": 32},
-        # RandomCrop with explicit int sizes (not float ratios):
-        {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": True},
         {
             "type": "PhotoMetricDistortion",
             "brightness_delta": 20,
@@ -753,6 +758,9 @@ def _build_mmdet_cfg(
             "hue_delta": 0,
         },
     ]
+    if use_random_crop:
+        # Nunca permitir recortes vacios para evitar batches sin positivos.
+        common_aug_pipeline.insert(4, {"type": "RandomCrop", "crop_size": (crop_h, crop_w), "allow_negative_crop": False})
 
     # Full augmentation pipeline (runs inside MultiImageMixDataset when CopyPaste is enabled).
     train_pipeline = [*common_aug_pipeline, {"type": "PackDetInputs"}]
@@ -812,7 +820,7 @@ def _build_mmdet_cfg(
                 "data_root": dataroot,
                 "ann_file": str(train_ann_path),
                 "data_prefix": {"img": "data/images/train/"},
-                "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+                "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
                 "pipeline": inner_pipeline,
             },
             "pipeline": train_pipeline,
@@ -825,7 +833,7 @@ def _build_mmdet_cfg(
             "data_root": dataroot,
             "ann_file": str(train_ann_path),
             "data_prefix": {"img": "data/images/train/"},
-            "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
+            "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
             "pipeline": [
                 {"type": "LoadImageFromFile"},
                 {"type": "LoadAnnotations", "with_bbox": True, "with_mask": False},
@@ -979,6 +987,11 @@ def _build_mmdet_cfg(
 
     print(f"[cascade] adaptive bbox losses -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
+    print(
+        "[cascade] anti-collapse policy -> "
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f}, "
+        f"random_crop={use_random_crop}, atss_topk={rpn_atss_topk}"
+    )
 
     return runtime_cfg
 
