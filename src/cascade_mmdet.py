@@ -201,6 +201,35 @@ def _build_adaptive_rcnn_iou_thresholds(coco: Dict[str, Any]) -> Tuple[Tuple[flo
     return thresholds, summary
 
 
+def _build_adaptive_rpn_anchor_generator(coco: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    stats = _analyze_bbox_distribution(coco)
+    small_ratio = float(stats.get("small_ratio", 0.0))
+    elongated_ratio = float(stats.get("elongated_ratio", 0.0))
+
+    # Keep elongated priors for SAR streaks but avoid extremely sparse ratios (33/50)
+    # that explode anchors-per-location and heavily slow down RPN.
+    ratios: List[float] = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+    if elongated_ratio >= 0.30:
+        ratios.append(20.0)
+
+    # Use one or two scales depending on small-object prevalence.
+    scales = [4, 8] if small_ratio >= 0.25 else [8]
+
+    anchor_generator = {
+        "type": "AnchorGenerator",
+        "scales": scales,
+        "ratios": ratios,
+        "strides": [4, 8, 16, 32, 64],
+    }
+    anchors_per_loc = len(scales) * len(ratios)
+    summary = (
+        f"small={small_ratio:.3f}, elongated={elongated_ratio:.3f} | "
+        f"rpn_anchors=scales{tuple(scales)}xratios{tuple(ratios)} "
+        f"(anchors_per_loc={anchors_per_loc})"
+    )
+    return anchor_generator, summary
+
+
 def _resolve_pretrained_checkpoint(arch: str, pretrained_weights: str) -> str:
     token = pretrained_weights.strip() if isinstance(pretrained_weights, str) else ""
     if token.upper() in {"NONE", "NULL", "FALSE", "NO"}:
@@ -336,6 +365,7 @@ def _build_mmdet_cfg(
     bbox_stats = _analyze_bbox_distribution(coco)
     rpn_loss_bbox, roi_stage_losses, adaptive_loss_summary = _build_adaptive_bbox_losses(coco)
     rcnn_iou_thresholds, adaptive_rcnn_summary = _build_adaptive_rcnn_iou_thresholds(coco)
+    adaptive_anchor_generator, adaptive_anchor_summary = _build_adaptive_rpn_anchor_generator(coco)
     stage1_iou, stage2_iou, stage3_iou = rcnn_iou_thresholds
     elongated_ratio = float(bbox_stats.get("elongated_ratio", 0.0))
 
@@ -357,16 +387,7 @@ def _build_mmdet_cfg(
             "type": "RPNHead",
             "in_channels": 256,
             "feat_channels": 256,
-            "anchor_generator": {
-                "type": "AnchorGenerator",
-                # Removed scale=2: generates 8px base anchors which at ratio=0.05
-                # produce ~1.8×35px — too small to be useful, just adds false negatives.
-                "scales": [4, 8],
-                "ratios": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 33.0, 50.0],
-                # 5 strides matching FPN num_outs=5.
-                # Backbone outputs [4,8,16,32]; FPN adds one coarse level → [4,8,16,32,64].
-                "strides": [4, 8, 16, 32, 64],
-            },
+            "anchor_generator": adaptive_anchor_generator,
             "bbox_coder": {
                 "type": "DeltaXYWHBBoxCoder",
                 "target_means": [0.0, 0.0, 0.0, 0.0],
@@ -454,7 +475,7 @@ def _build_mmdet_cfg(
                 "debug": False,
             },
             "rpn_proposal": {
-                "nms_pre": 6000,
+                "nms_pre": 2500,
                 "max_per_img": int(cfg.model.detections_per_img),
                 "nms": {"type": "nms", "iou_threshold": 0.65},
                 "min_bbox_size": 0,
@@ -491,7 +512,7 @@ def _build_mmdet_cfg(
         },
         "test_cfg": {
             "rpn": {
-                "nms_pre": 6000,
+                "nms_pre": 2500,
                 "max_per_img": int(cfg.model.detections_per_img),
                 "nms": {"type": "nms", "iou_threshold": 0.65},
                 "min_bbox_size": 0,
@@ -687,6 +708,7 @@ def _build_mmdet_cfg(
 
     print(f"[cascade] adaptive bbox losses   -> {adaptive_loss_summary}")
     print(f"[cascade] adaptive rcnn assigners -> {adaptive_rcnn_summary}")
+    print(f"[cascade] adaptive rpn anchors    -> {adaptive_anchor_summary}")
     print(f"[cascade] AMP={'enabled (fp16)' if use_amp else 'disabled'}")
 
     return runtime_cfg
