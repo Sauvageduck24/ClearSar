@@ -218,7 +218,7 @@ def _build_adaptive_rpn_anchor_generator(coco: Dict[str, Any]) -> Tuple[Dict[str
         "type": "AnchorGenerator",
         "scales": scales,
         "ratios": ratios,
-        "strides": [4, 8, 16, 32, 64],
+        "strides": [2, 4, 8, 16, 32, 64],
     }
     anchors_per_loc = len(scales) * len(ratios)
     summary = (
@@ -341,7 +341,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
         }
         # FPN (not PAFPN): PAFPN adds a second bottom-up pass, ~30-40% slower per epoch
         # with marginal benefit for ~514px images. FPN is the right speed/quality trade-off.
-        neck = {"type": "FPN", "in_channels": [192, 384, 768, 1536], "out_channels": 256, "num_outs": 5}
+        neck = {"type": "FPN", "in_channels": [192, 384, 768, 1536], "out_channels": 256, "num_outs": 6}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -355,7 +355,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "gap_before_final_norm": False,
             "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt, "prefix": "backbone"},
         }
-        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 6}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -368,7 +368,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "style": "pytorch",
             "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 6}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -382,7 +382,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             "stage_with_dcn": (False, True, True, True),
             "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 5}
+        neck = {"type": "FPN", "in_channels": [256, 512, 1024, 2048], "out_channels": 256, "num_outs": 6}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -401,7 +401,7 @@ def _build_backbone_and_neck(arch: str, pretrained_weights: str) -> Tuple[Dict[s
             },
             "init_cfg": {"type": "Pretrained", "checkpoint": pretrained_ckpt},
         }
-        neck = {"type": "HRFPN", "in_channels": [40, 80, 160, 320], "out_channels": 256, "num_outs": 5}
+        neck = {"type": "HRFPN", "in_channels": [40, 80, 160, 320], "out_channels": 256, "num_outs": 6}
         _ensure_pretrained_backbone(arch, backbone)
         return backbone, neck
 
@@ -478,14 +478,15 @@ def _build_mmdet_cfg(
                 "type": "SingleRoIExtractor",
                 "roi_layer": {"type": "RoIAlign", "output_size": (14, 14), "sampling_ratio": 2},
                 "out_channels": 256,
-                "featmap_strides": [4, 8, 16, 32, 64],
-                # finest_scale=56: boxes with sqrt(area)<56 → P2 (stride 4).
-                # Thin bands 119×9=1071px² → sqrt=32 < 56 → P2 ✓
-                "finest_scale": 56,
+                "featmap_strides": [2, 4, 8, 16, 32],
+                # finest_scale=28: boxes with sqrt(area)<28 → P2 (stride 2).
+                # Thin bands 119×9=1071px² → sqrt=32 > 28 → P3 (stride 4), no small
+                # Boxes ≤8px height with stride 2 → 4 cells vertically, sufficient receptive field.
+                "finest_scale": 28,
             },
             "bbox_head": [
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256, "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
@@ -497,7 +498,7 @@ def _build_mmdet_cfg(
                     "loss_bbox": roi_stage_losses[0],
                 },
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256, "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
@@ -509,7 +510,7 @@ def _build_mmdet_cfg(
                     "loss_bbox": roi_stage_losses[1],
                 },
                 {
-                    "type": "Shared4Conv1FCBBoxHead",
+                    "type": "Shared2FCBBoxHead",
                     "in_channels": 256, "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14), "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
@@ -592,7 +593,7 @@ def _build_mmdet_cfg(
                 "min_bbox_size": 0,
             },
             "rcnn": {
-                "score_thr": 0.05,
+                "score_thr": 0.0,
                 "nms": {"type": "soft_nms", "iou_threshold": 0.5, "min_score": 0.001},
                 "max_per_img": max_test_dets,
             },
@@ -619,11 +620,11 @@ def _build_mmdet_cfg(
     common_aug = [
         {"type": "RandomChoiceResize", "scales": multiscale_train_scales, "keep_ratio": True},
         {"type": "RandomFlip", "prob": 0.5, "direction": ["horizontal"]},
-        {"type": "RandomFlip", "prob": 0.5, "direction": ["vertical"]},
+        {"type": "RandomFlip", "prob": 0.15, "direction": ["vertical"]},
     ]
     if speed_mode == "quality":
         common_aug.extend([
-            {"type": "RandomShift", "max_shift_px": 32},
+            {"type": "RandomShift", "max_shift_px": 16},
             {"type": "PhotoMetricDistortion",
              "brightness_delta": 20, "contrast_range": (0.8, 1.2),
              "saturation_range": (1.0, 1.0), "hue_delta": 0},
@@ -644,7 +645,7 @@ def _build_mmdet_cfg(
         "data_root": str(cfg.paths.project_root) + "/",
         "ann_file": str(train_ann_path),
         "data_prefix": {"img": "data/images/train/"},
-        "filter_cfg": {"filter_empty_gt": True, "min_size": 1},
+        "filter_cfg": {"filter_empty_gt": False, "min_size": 1},
         "pipeline": train_pipeline,
     }
 

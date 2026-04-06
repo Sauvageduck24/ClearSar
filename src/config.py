@@ -32,7 +32,7 @@ class ModelConfig:
     num_classes: int = 2  # background + RFI
     score_thresh: float = 0.001
     nms_thresh: float = 0.5
-    detections_per_img: int = 1000
+    detections_per_img: int = 300
     ssl_backbone_path: Optional[Path] = None
 
 
