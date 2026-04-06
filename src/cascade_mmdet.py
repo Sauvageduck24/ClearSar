@@ -346,7 +346,6 @@ def _build_mmdet_cfg(
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
-                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -367,7 +366,6 @@ def _build_mmdet_cfg(
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
-                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
@@ -388,7 +386,6 @@ def _build_mmdet_cfg(
                     "in_channels": 256,
                     "fc_out_channels": 1024,
                     "roi_feat_size": (14, 14),
-                    "norm_cfg": {"type": "BN"},
                     "num_classes": num_fg_classes,
                     "reg_decoded_bbox": True,
                     "bbox_coder": {
