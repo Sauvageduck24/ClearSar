@@ -562,29 +562,21 @@ def _build_mmdet_cfg(
         ]},
     ]
 
-    # FIX: AMP is stable with Cascade RCNN + CIoU/GIoU + AdamW on torch>=2.0.
-    # Previous code always printed a warning and silently ignored use_amp.
-    # AmpOptimWrapper handles fp16 automatically — ~1.5-2x speed vs OptimWrapper.
-    use_amp = bool(getattr(cfg.train, "use_amp", False))
-    if use_amp:
-        optim_wrapper: Dict[str, Any] = {
-            "type": "AmpOptimWrapper",
-            "dtype": "float16",
-            "optimizer": {
-                "type": "AdamW",
-                "lr": float(cfg.train.learning_rate),
-                "weight_decay": float(cfg.train.weight_decay),
-            },
-        }
-    else:
-        optim_wrapper = {
-            "type": "OptimWrapper",
-            "optimizer": {
-                "type": "AdamW",
-                "lr": float(cfg.train.learning_rate),
-                "weight_decay": float(cfg.train.weight_decay),
-            },
-        }
+    # AMP can fail in Cascade RPN proposal generation due to a known dtype mismatch
+    # in batched_nms (Half destination vs Float source) on some mmcv/mmdet builds.
+    requested_amp = bool(getattr(cfg.train, "use_amp", False))
+    use_amp = False
+    if requested_amp:
+        print("[cascade] AMP requested but disabled for stability (fp16 NMS dtype mismatch).")
+
+    optim_wrapper: Dict[str, Any] = {
+        "type": "OptimWrapper",
+        "optimizer": {
+            "type": "AdamW",
+            "lr": float(cfg.train.learning_rate),
+            "weight_decay": float(cfg.train.weight_decay),
+        },
+    }
 
     if cfg.model.architecture in {CASCADE_ARCH_SWIN_L, CASCADE_ARCH_CONVNEXT_XL}:
         optim_wrapper["paramwise_cfg"] = {
