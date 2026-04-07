@@ -143,6 +143,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ensemble-top-k", type=int, default=2)
     parser.add_argument("--yolo-model", type=str, default="yolo8n",
                         help="Variante YOLO: yolo11n/s/m/l/x o yolov8m etc.")
+    parser.add_argument("--cache", type=str, choices=["disk", "ram", "none"], default="disk",
+                        help="Modo cache para YOLO train: disk, ram o none")
+    parser.add_argument(
+        "--evolve",
+        type=int,
+        nargs="?",
+        const=100,
+        default=0,
+        help="Habilitar evolve para YOLO. Valor opcional: generaciones (default: 100).",
+    )
     parser.add_argument("--local-val-only", action="store_true")
     parser.add_argument("--use-tta", type=str, default="True", help="Habilitar TTA (True/False)")
     return parser.parse_args()
@@ -429,8 +439,22 @@ def main() -> None:
         cmd = [python_exe, "-m", "src.yolo_train",
                "--project-root", str(project_root),
                "--model", args.yolo_model]
+        yolo_extra_tokens: list[str] = []
         if args.yolo_extra_args.strip():
-            cmd.extend(shlex.split(args.yolo_extra_args.strip()))
+            yolo_extra_tokens = shlex.split(args.yolo_extra_args.strip())
+            cmd.extend(yolo_extra_tokens)
+
+        # Si no viene cache en --yolo-extra-args, propagar el de run_pipeline.
+        if _extract_arg_value(yolo_extra_tokens, "--cache") is None:
+            cmd.extend(["--cache", args.cache])
+
+        has_evolve_in_extra = any(
+            tok == "--evolve" or tok.startswith("--evolve=")
+            for tok in yolo_extra_tokens
+        )
+        if args.evolve > 0 and not has_evolve_in_extra:
+            cmd.extend(["--evolve", str(args.evolve)])
+
         if extra:
             cmd.extend(extra)
         return cmd

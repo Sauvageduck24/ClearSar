@@ -58,7 +58,9 @@ def _convert_coco_to_yolo(
         lines: List[str] = []
         for ann in anns:
             x, y, w, h = [float(v) for v in ann["bbox"]]
-            if w <= 0 or h <= 0:
+            if w < 2 or h < 2:
+                continue
+            if w * h < 4:
                 continue
             cx = (x + w / 2) / img_w
             cy = (y + h / 2) / img_h
@@ -173,12 +175,103 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--patience", type=int, default=40)
+    parser.add_argument("--patience", type=int, default=50)
     parser.add_argument("--extra-images-dir", type=str, default=None)
     parser.add_argument("--extra-annotations-path", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--evolve",
+        type=int,
+        nargs="?",
+        const=100,
+        default=0,
+        help="Enable YOLO hyperparameter evolution. Optional value is generations (default: 100).",
+    )
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--cache",
+        type=str,
+        default="disk",
+        choices=["disk", "ram", "none"],
+        help="Cache mode for Ultralytics dataloader: disk, ram or none.",
+    )
     return parser.parse_args()
+
+
+def _extract_detailed_map_metrics(metrics: Dict) -> Dict[str, float]:
+    """
+    Normalize metric keys and extract AP split by object size when available.
+    """
+    normalized: Dict[str, float] = {}
+    for key, value in metrics.items():
+        if not isinstance(value, (int, float)):
+            continue
+        nk = str(key).lower().replace(" ", "").replace("_", "").replace("-", "")
+        normalized[nk] = float(value)
+
+    def _pick(candidates: List[str]) -> Optional[float]:
+        for cand in candidates:
+            if cand in normalized:
+                return normalized[cand]
+        return None
+
+    out: Dict[str, float] = {}
+
+    map5095_s = _pick([
+        "metrics/map5095small(b)",
+        "metrics/map5095s(b)",
+        "boxmap5095s",
+        "map5095s",
+        "aps",
+    ])
+    map5095_m = _pick([
+        "metrics/map5095medium(b)",
+        "metrics/map5095m(b)",
+        "boxmap5095m",
+        "map5095m",
+        "apm",
+    ])
+    map5095_l = _pick([
+        "metrics/map5095large(b)",
+        "metrics/map5095l(b)",
+        "boxmap5095l",
+        "map5095l",
+        "apl",
+    ])
+
+    map50_s = _pick([
+        "metrics/map50small(b)",
+        "metrics/map50s(b)",
+        "boxmap50s",
+        "map50s",
+    ])
+    map50_m = _pick([
+        "metrics/map50medium(b)",
+        "metrics/map50m(b)",
+        "boxmap50m",
+        "map50m",
+    ])
+    map50_l = _pick([
+        "metrics/map50large(b)",
+        "metrics/map50l(b)",
+        "boxmap50l",
+        "map50l",
+    ])
+
+    if map5095_s is not None:
+        out["mAP_s"] = map5095_s
+    if map5095_m is not None:
+        out["mAP_m"] = map5095_m
+    if map5095_l is not None:
+        out["mAP_l"] = map5095_l
+    if map50_s is not None:
+        out["mAP50_s"] = map50_s
+    if map50_m is not None:
+        out["mAP50_m"] = map50_m
+    if map50_l is not None:
+        out["mAP50_l"] = map50_l
+
+    return out
 
 
 def main() -> None:
@@ -228,13 +321,7 @@ def main() -> None:
         model_name = str(found) if found else model_arg + ".pt"
 
     print(f"[yolo] Cargando YOLO: {model_name}")
-    # 1. Asegúrate de que el nombre ayude a identificar el scale 's'
-    if "p2" in model_name.lower():
-        print('Cargando arquitectura P2 (Small) para objetos finos...')
-        # Fuerza que use el YAML y cargue los pesos del Small
-        model = YOLO("yolo26s-p2.yaml").load("yolo26s.pt")
-    else:
-        model = YOLO(model_name)
+    model = YOLO(model_name)
 
     run_name = f"clearsar_{args.model.replace('.pt', '')}"
     yolo_runs_dir = project_root / "outputs" / "yolo_runs"
@@ -264,12 +351,11 @@ def main() -> None:
         # → el modelo aprendería patrones falsos. Mantenemos solo flips.
         degrees=0.0,
         # Entrenamiento rectangular para reducir padding y ganar resolución efectiva.
-        #rect=True,
+        rect=False,
 
-        # scale=0.3: la mediana de alto de caja es 10px. Con scale=0.5 (el
-        # valor anterior) el zoom-out llevaría esa mediana a 5px → casi
-        # invisible en el feature map. 0.3 reduce al 70% como mínimo → 7px.
-        scale=0.3,
+        # scale=0.15: reduce el zoom-out máximo para preservar mejor cajas
+        # pequeñas. Una caja de 10px queda en un mínimo aproximado de 8.5px.
+        scale=0.15,
 
         # translate=0.05: las rayas ocupan casi todo el ancho de la imagen
         # (~27% del ancho normalizado). Traslaciones grandes las sacan del
@@ -283,15 +369,10 @@ def main() -> None:
         # perspective=0.0: mismo razonamiento que shear.
         perspective=0.0,
 
-        # rect=True: entrenamiento rectangular. Las imágenes miden ~515x342
-        # (aspecto 1.5:1). Con rect=True YOLO usa letterbox mínimo
-        # (640x426 en lugar de 640x640) → menos padding → más resolución
-        # efectiva → mejor detección de rayas finas de 1-3px de alto.
-
         # fliplr/flipud: el RFI puede aparecer en cualquier posición y
         # orientación espejo → ambos flips son válidos físicamente.
         fliplr=0.5,
-        flipud=0.5,
+        flipud=0.0,
 
         # ── Color / intensidad ─────────────────────────────────────────────
         # Los quicklooks SAR codifican polarizaciones en canales RGB
@@ -300,22 +381,16 @@ def main() -> None:
         # es la clave para detectarlo.
         hsv_h=0.01,
         hsv_s=0.3,
-        hsv_v=0.2,
+        hsv_v=0.4,
+
+        auto_augment=False, # AutoAugment y RandAugment aplican transformaciones muy agresivas que pueden degradar el entrenamiento con rayas finas. Mejor desactivarlos.
 
         # ── Mosaic / copy-paste ────────────────────────────────────────────
-        # mosaic=1.0: combina 4 imágenes → el modelo ve RFI en muchos
-        # contextos distintos. Muy útil con pocos datos (3154 imágenes).
-        mosaic=0.8,
+        mosaic=0.0,
+        close_mosaic=30,
 
-        # close_mosaic=10: desactiva mosaic en las últimas 10 épocas para
-        # que el modelo se estabilice con imágenes realistas antes de
-        # la evaluación final. Mejora el mAP en val.
-        close_mosaic=20,
-
-        # copy_paste=0.3: copia objetos RFI de una imagen a otra. Especialmente
-        # útil aquí porque el 48.8% de las cajas son "small" (<1024px²) y hay
-        # pocas por imagen (mediana=2). Multiplica ejemplos de RFI sin anotar más.
-        copy_paste=0.2,
+        copy_paste=0.0,
+        copy_paste_mode='flip',
 
         # mixup=0.0: mixup en detección superpone dos imágenes y mezcla sus
         # bounding boxes. Con rayas finas esto genera targets ambiguos y
@@ -329,14 +404,14 @@ def main() -> None:
         warmup_momentum=0.8,
         warmup_bias_lr=0.1,
 
-        # ── Loss weights ───────────────────────────────────────────────────
-        # box=7.5: peso del box regression loss. Default de YOLO, bien
-        # calibrado para objetos pequeños. No tocar.
-        box=7.5,
+        #multi_scale=0.3,
 
-        # cls=0.5: solo hay una clase (RFI) → el classification loss tiene
-        # menos importancia que el box loss.
-        cls=0.5,
+        # ── Loss weights ───────────────────────────────────────────────────
+        box=15.0,
+
+        # cls para que diferencie el box del fondo, solo hay una clase (RFI) y el fondo es fondo, no hay otras clases que confundir.
+        cls=1.0,
+        dfl=0.0, # Distribution Focal Loss no aporta beneficio para cajas tan pequeñas y finas, y puede introducir ruido en el entrenamiento. Mejor desactivarlo.
 
         # Una sola clase en ClearSAR.
         single_cls=True,
@@ -361,15 +436,32 @@ def main() -> None:
         else:
             print(f"[yolo] No checkpoint found at {last_ckpt}, starting fresh")
 
+    cache_mode = False if args.cache == "none" else args.cache
+    train_kwargs["cache"] = cache_mode
+    print(f"[yolo] Cache mode: {cache_mode}")
+
+    if args.evolve > 0:
+        train_kwargs["evolve"] = args.evolve
+        print(f"[yolo] Evolve enabled: {args.evolve} generations")
+
     results = model.train(**train_kwargs)
+
+    # Validate the model
+    print("\n[yolo] ═" * 40)
+    print("[yolo] Validate the model")
+    print("[yolo] ═" * 40)
+    metrics = model.val(data=str(yaml_path), split="val", plots=False)
+    print(f"[yolo] map50-95={metrics.box.map:.4f}")
+    print(f"[yolo] map50={metrics.box.map50:.4f}")
+    print(f"[yolo] map75={metrics.box.map75:.4f}")
 
     best_ckpt = yolo_runs_dir / run_name / "weights" / "best.pt"
     if best_ckpt.exists():
         dest = cfg.paths.models_dir / f"yolo_best_{args.model.replace('.pt', '')}.pt"
         shutil.copy2(best_ckpt, dest)
-        print(f"[yolo] Best checkpoint copied to {dest}")
+        print(f"\n[yolo] Best checkpoint copied to {dest}")
 
-    print(f"[yolo] Training complete. Results: {results}")
+    print(f"[yolo] Training complete.")
 
 
 if __name__ == "__main__":

@@ -21,13 +21,13 @@ mAP leaderboard =>
 & C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window1 --ensemble-top-k 3 --train-extra-args "--arch fasterrcnn_mobilenet_v3_large_fpn --epochs 50 --batch-size 4 --num-workers 4 --grad-accum-steps 4" --mapping-path catalog.v1.parquet
 
 # YOLO26n
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 24 --num-workers 8" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 200 --batch-size 16 --num-workers 12 --lr 0.002" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
 # YOLO26n with synthetic data
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args "--image-size 640 --epochs 400 --batch-size 12 --num-workers 4 --extra-images-dir data/synthetic/images --extra-annotations-path data/synthetic/instances.json" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args "--image-size 640 --epochs 200 --batch-size 12 --num-workers 12 --lr 0.002 --extra-images-dir data/synthetic/images --extra-annotations-path data/synthetic/instances.json" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
 # YOLO26s
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 12 --num-workers 8" --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 200 --batch-size 12 --num-workers 12 --lr 0.002" --use-tta False --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500" --cache disk
 
 # YOLO26x
 run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 32 --num-workers 8" --yolo-model yolo26x --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
@@ -39,25 +39,13 @@ run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 
 
 ## YOLO26n
 
-COCO Dataset
-
-mAPval 50-95(e2e) = 0.401
-
-val mAP = 0.38 (110 epochs)
-leaderboard = 0.3857
-
-diferencia entre mAP leaderboard y mAP coco = 0.96 = -4%
+mAPval 50-95 = 
+leaderboard = 
 
 ## YOLO26s
 
-COCO Dataset
-
-mAPval 50-95(e2e) = 0.478
-
-val mAP = 0.426 (epochs 170)
-leaderboard = 0.4290
-
-diferencia entre mAP leaderboard y mAP coco = 0.89 = -11%
+mAPval 50-95 = 
+leaderboard = 
 
 # Retinanet
 
