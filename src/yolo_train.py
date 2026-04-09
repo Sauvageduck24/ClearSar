@@ -140,21 +140,35 @@ def _resolve_sahi_dataset_paths(project_root: Path, dataset_root_arg: Optional[s
 
     ann_candidates = [
         dataset_root / "instances_train.json",
+        dataset_root / "instances_train.json_coco.json",
         dataset_root / "instances.json",
         dataset_root / "annotations" / "instances_train.json",
         dataset_root / "annotations" / "instances.json",
     ]
     ann_candidates.extend(sorted(dataset_root.glob("instances_train*.json")))
     ann_candidates.extend(sorted(dataset_root.glob("instances*.json")))
+    ann_candidates.extend(sorted(dataset_root.glob("*_coco.json")))
+    ann_candidates.extend(sorted(dataset_root.glob("*.json")))
     ann_candidates.extend(sorted((dataset_root / "annotations").glob("instances_train*.json")))
     ann_candidates.extend(sorted((dataset_root / "annotations").glob("instances*.json")))
+    ann_candidates.extend(sorted((dataset_root / "annotations").glob("*_coco.json")))
+    ann_candidates.extend(sorted((dataset_root / "annotations").glob("*.json")))
 
     images_candidates = [
+        dataset_root,
         dataset_root / "images",
         dataset_root / "train",
     ]
     images_candidates.extend(sorted(p for p in dataset_root.glob("instances_train_images*") if p.is_dir()))
     images_candidates.extend(sorted(p for p in dataset_root.glob("instances*_images*") if p.is_dir()))
+
+    # Fallback adicional: cualquier subdirectorio con imagenes sliceadas.
+    images_candidates.extend(
+        sorted(
+            p for p in dataset_root.iterdir()
+            if p.is_dir() and any(x.is_file() and x.suffix.lower() in IMAGE_EXTS for x in p.iterdir())
+        )
+    )
 
     annotation_path = next((p for p in ann_candidates if p.exists()), None)
     images_dir = None
