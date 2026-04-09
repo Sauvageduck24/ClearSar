@@ -1,21 +1,45 @@
 from __future__ import annotations
 
 import argparse
-import shlex
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
 
-def _run_step(step_name: str, command: list[str], cwd: Path) -> None:
-    print(f"[{step_name}] Ejecutando: {' '.join(shlex.quote(c) for c in command)}")
-    result = subprocess.run(command, cwd=str(cwd), check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"Fallo en '{step_name}' con exit code {result.returncode}")
+def _run_slice(
+    step_name: str,
+    dataset_json_path: Path,
+    image_dir: Path,
+    output_dir: Path,
+    slice_size: int,
+    overlap_ratio: float,
+) -> None:
+    print(
+        f"[{step_name}] Ejecutando con API SAHI: "
+        f"dataset_json_path={dataset_json_path} image_dir={image_dir} output_dir={output_dir} "
+        f"slice_size={slice_size} overlap_ratio={overlap_ratio}"
+    )
+
+    try:
+        from sahi.slicing import slice_coco
+    except ImportError as e:
+        raise ImportError(
+            "No se pudo importar SAHI. Instala con: pip install sahi"
+        ) from e
+
+    output_coco_name = dataset_json_path.name
+    slice_coco(
+        coco_annotation_file_path=str(dataset_json_path),
+        image_dir=str(image_dir),
+        output_coco_annotation_file_name=output_coco_name,
+        output_dir=str(output_dir),
+        slice_height=slice_size,
+        slice_width=slice_size,
+        overlap_height_ratio=overlap_ratio,
+        overlap_width_ratio=overlap_ratio,
+        verbose=True,
+    )
 
 
 def _resolve_project_path(project_root: Path, value: str) -> Path:
@@ -23,38 +47,6 @@ def _resolve_project_path(project_root: Path, value: str) -> Path:
     if not path.is_absolute():
         path = project_root / path
     return path
-
-
-def _build_sahi_command(
-    dataset_json_path: Path,
-    image_dir: Path,
-    output_dir: Path,
-    slice_size: int,
-    overlap_ratio: float,
-) -> list[str]:
-    if shutil.which("sahi"):
-        cmd = ["sahi"]
-    else:
-        # Fallback para entornos donde el entrypoint de sahi no esta en PATH.
-        cmd = [sys.executable, "-m", "sahi"]
-
-    cmd.extend(
-        [
-            "coco",
-            "slice",
-            "--dataset_json_path",
-            str(dataset_json_path),
-            "--image_dir",
-            str(image_dir),
-            "--output_dir",
-            str(output_dir),
-            "--slice_size",
-            str(slice_size),
-            "--overlap_ratio",
-            str(overlap_ratio),
-        ]
-    )
-    return cmd
 
 
 def _validate_inputs(annotation_path: Path, images_dir: Path) -> None:
@@ -138,14 +130,14 @@ def main() -> None:
     _validate_inputs(train_annotations, train_images)
     train_output.mkdir(parents=True, exist_ok=True)
 
-    train_cmd = _build_sahi_command(
+    _run_slice(
+        step_name="slice-train",
         dataset_json_path=train_annotations,
         image_dir=train_images,
         output_dir=train_output,
         slice_size=args.slice_size,
         overlap_ratio=args.overlap_ratio,
     )
-    _run_step("slice-train", train_cmd, cwd=project_root)
 
     if args.slice_test:
         if not args.test_annotations:
@@ -158,14 +150,14 @@ def main() -> None:
         _validate_inputs(test_annotations, test_images)
         test_output.mkdir(parents=True, exist_ok=True)
 
-        test_cmd = _build_sahi_command(
+        _run_slice(
+            step_name="slice-test",
             dataset_json_path=test_annotations,
             image_dir=test_images,
             output_dir=test_output,
             slice_size=args.slice_size,
             overlap_ratio=args.overlap_ratio,
         )
-        _run_step("slice-test", test_cmd, cwd=project_root)
 
     print("[slicing] Proceso completado")
 
