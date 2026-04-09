@@ -38,7 +38,7 @@ def _run_slice(
         slice_width=slice_size,
         overlap_height_ratio=overlap_ratio,
         overlap_width_ratio=overlap_ratio,
-        verbose=True,
+        verbose=False,
     )
 
 
