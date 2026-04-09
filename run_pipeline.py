@@ -102,6 +102,22 @@ def _has_arg(tokens: list[str], key: str) -> bool:
     return any(tok == key or tok.startswith(f"{key}=") for tok in tokens)
 
 
+def _strip_arg(tokens: list[str], key: str) -> list[str]:
+    cleaned: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == key:
+            i += 2
+            continue
+        if tok.startswith(f"{key}="):
+            i += 1
+            continue
+        cleaned.append(tok)
+        i += 1
+    return cleaned
+
+
 def _resolve_project_path(project_root: Path, value: Optional[str]) -> Optional[Path]:
     if value is None:
         return None
@@ -136,6 +152,8 @@ def main() -> None:
 
     yolo_extra_tokens = shlex.split(args.yolo_extra_args.strip()) if args.yolo_extra_args.strip() else []
     yolo_infer_tokens = shlex.split(args.yolo_inference.strip()) if args.yolo_inference.strip() else []
+    yolo_extra_tokens = _strip_arg(yolo_extra_tokens, "--image-size")
+    yolo_infer_tokens = _strip_arg(yolo_infer_tokens, "--image-size")
 
     if not args.skip_slicing:
         slicing_cmd = [
@@ -181,6 +199,8 @@ def main() -> None:
             "sahi",
             "--dataset-root",
             args.sliced_train_dir,
+            "--image-size",
+            str(args.slice_size),
         ]
         yolo_train_cmd.extend(yolo_extra_tokens)
 
@@ -219,11 +239,9 @@ def main() -> None:
             str(mapping_path),
             "--output",
             str(output_path),
+            "--image-size",
+            str(args.slice_size),
         ]
-
-        imgsz_val = _extract_arg_value(yolo_extra_tokens, "--image-size")
-        if imgsz_val and not _has_arg(yolo_infer_tokens, "--image-size"):
-            yolo_infer_cmd.extend(["--image-size", imgsz_val])
 
         yolo_infer_cmd.extend(yolo_infer_tokens)
         _run_step("yolo-inference", yolo_infer_cmd, cwd=project_root)
