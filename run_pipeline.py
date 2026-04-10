@@ -152,8 +152,8 @@ def main() -> None:
 
     yolo_extra_tokens = shlex.split(args.yolo_extra_args.strip()) if args.yolo_extra_args.strip() else []
     yolo_infer_tokens = shlex.split(args.yolo_inference.strip()) if args.yolo_inference.strip() else []
+    yolo_train_image_size = _extract_arg_value(yolo_extra_tokens, "--image-size")
     yolo_extra_tokens = _strip_arg(yolo_extra_tokens, "--image-size")
-    yolo_infer_tokens = _strip_arg(yolo_infer_tokens, "--image-size")
 
     if not args.skip_slicing:
         slicing_cmd = [
@@ -195,13 +195,19 @@ def main() -> None:
             str(project_root),
             "--model",
             args.yolo_model,
-            "--dataset-source",
-            "sahi",
-            "--dataset-root",
-            args.sliced_train_dir,
             "--image-size",
-            str(args.slice_size),
+            str(yolo_train_image_size if yolo_train_image_size is not None else args.slice_size),
         ]
+
+        dataset_source_override = _extract_arg_value(yolo_extra_tokens, "--dataset-source")
+        if dataset_source_override is None:
+            if args.skip_slicing:
+                yolo_train_cmd.extend(["--dataset-source", "normal"])
+            else:
+                yolo_train_cmd.extend(["--dataset-source", "sahi", "--dataset-root", args.sliced_train_dir])
+        elif dataset_source_override == "sahi" and _extract_arg_value(yolo_extra_tokens, "--dataset-root") is None:
+            yolo_train_cmd.extend(["--dataset-root", args.sliced_train_dir])
+
         yolo_train_cmd.extend(yolo_extra_tokens)
 
         if not _has_arg(yolo_extra_tokens, "--cache"):
@@ -239,9 +245,14 @@ def main() -> None:
             str(mapping_path),
             "--output",
             str(output_path),
-            "--image-size",
+            "--slice-size",
             str(args.slice_size),
+            "--overlap-ratio",
+            str(args.overlap_ratio),
         ]
+
+        if not _has_arg(yolo_infer_tokens, "--image-size"):
+            yolo_infer_cmd.extend(["--image-size", str(args.slice_size)])
 
         yolo_infer_cmd.extend(yolo_infer_tokens)
         _run_step("yolo-inference", yolo_infer_cmd, cwd=project_root)

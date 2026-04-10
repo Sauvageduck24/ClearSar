@@ -21,16 +21,16 @@ mAP leaderboard =>
 & C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window1 --ensemble-top-k 3 --train-extra-args "--arch fasterrcnn_mobilenet_v3_large_fpn --epochs 50 --batch-size 4 --num-workers 4 --grad-accum-steps 4" --mapping-path catalog.v1.parquet
 
 # YOLO26n (image-size como lista)
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (512,1024) --epochs 200 --batch-size 16 --num-workers 12 --lr 0.002" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (512,1024) --epochs 200 --batch-size 16 --num-workers 12 --lr 0.002" --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
 # YOLO26n with synthetic data
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args "--image-size (512,1024) --epochs 200 --batch-size 12 --num-workers 12 --lr 0.002 --extra-images-dir data/synthetic/images --extra-annotations-path data/synthetic/instances.json" --use-tta False --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args "--image-size (512,1024) --epochs 200 --batch-size 12 --num-workers 12 --lr 0.002 --extra-images-dir data/synthetic/images --extra-annotations-path data/synthetic/instances.json" --yolo-model yolo26n --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
 # YOLO26s
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (512,1024) --epochs 150 --batch-size 12 --num-workers 12 --lr 0.002" --use-tta False --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500" --cache disk
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (512,1024) --epochs 150 --batch-size 12 --num-workers 12 --lr 0.002" --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500" --cache disk
 
 # YOLO26s cuadrado en formato lista
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (640,640) --epochs 150 --batch-size 12 --num-workers 12 --lr 0.0005" --use-tta True --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500" --cache disk
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size (640,640) --epochs 150 --batch-size 12 --num-workers 12 --lr 0.0005" --yolo-model yolo26s --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500" --cache disk
 
 # yolo11 con sahi
 
@@ -47,7 +47,7 @@ sahi coco slice --dataset_json_path instances_train.json --image_dir data/images
   --yolo-extra-args "--image-size 512 --epochs 10 --batch-size 16 --num-workers 12 --lr 0.0005" `
   --yolo-model yolo11s `
   --mapping-path catalog.v1.parquet `
-  --yolo-inference "--conf 0.001 --max-det 500 --tta --merge-boxes" `
+  --yolo-inference "--conf 0.001 --max-det 500" `
   --cache disk `
   --yolo-dataset-source sahi `
   --yolo-dataset-root "data/sliced_dataset"
@@ -56,7 +56,7 @@ sahi coco slice --dataset_json_path instances_train.json --image_dir data/images
 run_pipeline.py --window-yolo --yolo-extra-args " --image-size 640 --epochs 400 --batch-size 32 --num-workers 8" --yolo-model yolo26x --mapping-path catalog.v1.parquet --yolo-inference "--conf 0.0 --max-det 500"
 
 # rtdetrv2-s
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 512 --epochs 200 --batch-size 24 --num-workers 6" --use-tta False --yolo-model rtdetr-l --mapping-path catalog.v1.parquet
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline.py --window-yolo --yolo-extra-args " --image-size 512 --epochs 200 --batch-size 24 --num-workers 6" --yolo-model rtdetr-l --mapping-path catalog.v1.parquet
 
 # Resultados
 
@@ -143,3 +143,5 @@ cascade_rcnn_resnet50
 
 # GENERATE SYNTHETIC DATA
 & C:\Users\esteb\.conda\envs\clearsar\python.exe e:/Sauvageduck24/ClearSar/synthetic_data/generate_synthetic_sar.py --num-images 1000 --mix-ratio 0.25
+
+# usar dbscan para agrupar cajas?

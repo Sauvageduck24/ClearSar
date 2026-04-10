@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 
@@ -57,6 +58,13 @@ def _validate_inputs(annotation_path: Path, images_dir: Path) -> None:
     has_images = any(p.suffix.lower() in IMAGE_EXTS for p in images_dir.iterdir() if p.is_file())
     if not has_images:
         raise FileNotFoundError(f"No se encontraron imagenes validas en: {images_dir}")
+
+
+def _reset_output_dir(output_dir: Path, step_name: str) -> None:
+    if output_dir.exists():
+        print(f"[{step_name}] Limpiando salida previa: {output_dir}")
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,7 +136,7 @@ def main() -> None:
     train_output = _resolve_project_path(project_root, args.train_output_dir)
 
     _validate_inputs(train_annotations, train_images)
-    train_output.mkdir(parents=True, exist_ok=True)
+    _reset_output_dir(train_output, step_name="slice-train")
 
     _run_slice(
         step_name="slice-train",
@@ -148,7 +156,7 @@ def main() -> None:
         test_output = _resolve_project_path(project_root, args.test_output_dir)
 
         _validate_inputs(test_annotations, test_images)
-        test_output.mkdir(parents=True, exist_ok=True)
+        _reset_output_dir(test_output, step_name="slice-test")
 
         _run_slice(
             step_name="slice-test",

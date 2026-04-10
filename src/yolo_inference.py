@@ -6,12 +6,10 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 import torch
-from PIL import Image
-from torchvision.ops import nms
 from tqdm import tqdm
+from ultralytics import YOLO
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
@@ -47,65 +45,6 @@ def _normalize_imgsz(imgsz: int | List[int]) -> tuple[int, int]:
             raise ValueError("--image-size como lista debe tener exactamente 2 valores")
         return int(imgsz[0]), int(imgsz[1])
     return int(imgsz), int(imgsz)
-
-
-def _resize_for_model(img_np: np.ndarray, imgsz: int | List[int]) -> np.ndarray:
-    target_h, target_w = _normalize_imgsz(imgsz)
-    pil_image = Image.fromarray(img_np)
-    try:
-        resample = Image.Resampling.BILINEAR
-    except AttributeError:
-        resample = Image.BILINEAR
-    return np.array(pil_image.resize((target_w, target_h), resample))
-
-
-def merge_horizontal_boxes(
-    boxes_xyxy: np.ndarray,
-    scores: np.ndarray,
-    row_tol_px: float = 4.0,
-    gap_px: float = 8.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    if len(boxes_xyxy) == 0:
-        return boxes_xyxy, scores
-
-    boxes = [list(map(float, box)) for box in boxes_xyxy]
-    score_list = [float(score) for score in scores]
-    order = sorted(range(len(boxes)), key=lambda idx: (boxes[idx][1], boxes[idx][0]))
-    used = [False] * len(boxes)
-
-    merged_boxes: List[List[float]] = []
-    merged_scores: List[float] = []
-
-    for i in order:
-        if used[i]:
-            continue
-
-        x1, y1, x2, y2 = boxes[i]
-        score = score_list[i]
-        used[i] = True
-
-        changed = True
-        while changed:
-            changed = False
-            for j in order:
-                if used[j]:
-                    continue
-                jx1, jy1, jx2, jy2 = boxes[j]
-                same_row = abs(jy1 - y1) <= row_tol_px and abs(jy2 - y2) <= row_tol_px
-                close_horiz = (jx1 - x2) <= gap_px and (x1 - jx2) <= gap_px
-                if same_row and close_horiz:
-                    x1 = min(x1, jx1)
-                    y1 = min(y1, jy1)
-                    x2 = max(x2, jx2)
-                    y2 = max(y2, jy2)
-                    score = max(score, score_list[j])
-                    used[j] = True
-                    changed = True
-
-        merged_boxes.append([x1, y1, x2, y2])
-        merged_scores.append(score)
-
-    return np.asarray(merged_boxes, dtype=np.float32), np.asarray(merged_scores, dtype=np.float32)
 
 
 def get_train_stats(json_path: Path) -> float:
@@ -156,92 +95,32 @@ def _load_test_id_mapping(test_images_dir: Path, mapping_path: Path) -> dict[str
     return mapping
 
 
-def _predict_single(
-    model,
-    img_path: Path,
-    conf: float,
-    iou: float,
-    max_det: int,
-    imgsz: int | list[int],
-    device: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    results = model.predict(
-        source=str(img_path),
-        conf=conf,
-        iou=iou,
-        max_det=max_det,
-        imgsz=imgsz,
-        augment=False,
-        device=device,
-        verbose=False,
-    )
-    res = results[0]
+def _prediction_to_xywh_and_score(prediction: Any) -> tuple[list[float], float]:
+    bbox_obj = prediction.bbox
+    if hasattr(bbox_obj, "to_xywh"):
+        x, y, w, h = bbox_obj.to_xywh()
+    else:
+        x = float(bbox_obj.minx)
+        y = float(bbox_obj.miny)
+        w = float(bbox_obj.maxx - bbox_obj.minx)
+        h = float(bbox_obj.maxy - bbox_obj.miny)
 
-    if res.boxes is None or res.boxes.xyxy.numel() == 0:
-        return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
+    score_obj = prediction.score
+    if hasattr(score_obj, "value"):
+        score = float(score_obj.value)
+    else:
+        score = float(score_obj)
 
-    boxes_xyxy = res.boxes.xyxy.cpu().numpy().astype(np.float32)
-    scores = res.boxes.conf.cpu().numpy().astype(np.float32)
-    return boxes_xyxy, scores
+    return [float(x), float(y), float(w), float(h)], score
 
 
-def tta_predict(model, img_path, conf, iou, tta_iou, max_det, imgsz, device):
-    img = np.array(Image.open(img_path).convert("RGB"))
-    h_img, w_img = img.shape[:2]
-    target_h, target_w = _normalize_imgsz(imgsz)
-
-    variants = [
-        (img, lambda b: b),
-        (np.fliplr(img), lambda b: [target_w - b[2], b[1], target_w - b[0], b[3]]),
-        (np.flipud(img), lambda b: [b[0], target_h - b[3], b[2], target_h - b[1]]),
-        (
-            np.fliplr(np.flipud(img)),
-            lambda b: [target_w - b[2], target_h - b[3], target_w - b[0], target_h - b[1]],
-        ),
-    ]
-
-    all_boxes, all_scores = [], []
-    scale_x = w_img / float(target_w)
-    scale_y = h_img / float(target_h)
-
-    for aug_img, inv_fn in variants:
-        aug_img_resized = _resize_for_model(aug_img, imgsz)
-        res = model.predict(
-            source=aug_img_resized,
-            conf=conf,
-            iou=iou,
-            max_det=max_det,
-            imgsz=imgsz,
-            device=device,
-            verbose=False,
-        )[0]
-
-        if res.boxes is None or res.boxes.xyxy.numel() == 0:
-            continue
-
-        for box, score in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy()):
-            inv_box = inv_fn(box.tolist())
-            all_boxes.append(
-                [
-                    inv_box[0] * scale_x,
-                    inv_box[1] * scale_y,
-                    inv_box[2] * scale_x,
-                    inv_box[3] * scale_y,
-                ]
-            )
-            all_scores.append(float(score))
-
-    if not all_boxes:
-        return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
-
-    boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
-    scores_tensor = torch.tensor(all_scores, dtype=torch.float32)
-
-    keep_indices = nms(boxes_tensor, scores_tensor, iou_threshold=tta_iou)
-
-    final_boxes = boxes_tensor[keep_indices].cpu().numpy()[:max_det]
-    final_scores = scores_tensor[keep_indices].cpu().numpy()[:max_det]
-    return final_boxes, final_scores
+def _yolo_box_to_xywh_and_score(box: Any) -> tuple[list[float], float]:
+    xyxy = box.xyxy[0].tolist()
+    x1, y1, x2, y2 = [float(v) for v in xyxy]
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    score = float(box.conf[0].item()) if box.conf is not None else 0.0
+    return [x1, y1, w, h], score
 
 
 def validate_submission_schema(rows: list[dict[str, Any]]) -> None:
@@ -281,29 +160,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-images-dir", type=str, default="data/images/test")
     parser.add_argument("--output", type=str, default="outputs/submission_yolo.zip")
     parser.add_argument("--conf", type=float, default=0.1, help="Umbral de confianza")
-    parser.add_argument("--iou", type=float, default=0.45, help="Umbral IOU para NMS")
-    parser.add_argument("--tta-iou", type=float, default=0.4, help="Umbral IOU para fusion NMS en TTA")
+    parser.add_argument("--iou", type=float, default=0.5, help="Umbral IOU para fusion entre slices")
     parser.add_argument("--max-det", type=int, default=500, help="Maximo detecciones por imagen")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--inference-mode",
+        type=str,
+        default="sahi",
+        choices=["sahi", "original"],
+        help="Modo de inferencia: 'sahi' usa slicing, 'original' usa imagen completa.",
+    )
+    parser.add_argument("--slice-size", type=int, default=256, help="Tamano de cada slice para inferencia SAHI")
+    parser.add_argument("--overlap-ratio", type=float, default=0.25, help="Overlap relativo entre slices")
+    parser.add_argument(
+        "--postprocess-type",
+        type=str,
+        default="GREEDYNMM",
+        choices=["NMM", "NMS", "GREEDYNMM", "LSNMS"],
+        help="Metodo de fusion de predicciones entre slices.",
+    )
     parser.add_argument(
         "--image-size",
         type=_parse_image_size,
         default=640,
-        help="Tamano de entrada del modelo. Ejemplos: 640 o [512,1024] / (512,1024).",
+        help="Tamano de entrada del detector por slice. Ejemplos: 640 o [512,1024] / (512,1024).",
     )
-
-    parser.add_argument("--tta", action="store_true", help="Activar Test Time Augmentation")
-    parser.add_argument("--merge-boxes", action="store_true", help="Fusionar sub-cajas horizontales adyacentes")
-    parser.add_argument("--merge-row-tol", type=float, default=4.0, help="Tolerancia vertical para merge")
-    parser.add_argument("--merge-gap-px", type=float, default=8.0, help="Gap horizontal maximo para merge")
     return parser.parse_args()
 
 
 def main() -> None:
+    AutoDetectionModel = None
+    get_sliced_prediction = None
     try:
-        from ultralytics import YOLO
+        from sahi import AutoDetectionModel as _AutoDetectionModel
+        from sahi.predict import get_sliced_prediction as _get_sliced_prediction
+        AutoDetectionModel = _AutoDetectionModel
+        get_sliced_prediction = _get_sliced_prediction
     except ImportError:
-        raise ImportError("Por favor instala ultralytics: pip install ultralytics")
+        # Solo requerido si se usa --inference-mode sahi.
+        pass
 
     args = parse_args()
     project_root = Path(args.project_root).resolve() if args.project_root else Path(__file__).resolve().parents[1]
@@ -337,62 +232,101 @@ def main() -> None:
         if p.is_file() and p.suffix.lower() in IMAGE_EXTS
     ]
 
-    model = YOLO(args.checkpoint)
+    checkpoint_path = str(Path(args.checkpoint).resolve())
+
+    if args.inference_mode == "sahi":
+        if AutoDetectionModel is None or get_sliced_prediction is None:
+            raise ImportError(
+                "SAHI no esta instalado. Instala dependencias con: pip install sahi ultralytics"
+            )
+        detection_model = AutoDetectionModel.from_pretrained(
+            model_type="ultralytics",
+            model_path=checkpoint_path,
+            confidence_threshold=args.conf,
+            device=args.device,
+            image_size=_normalize_imgsz(args.image_size),
+        )
+    else:
+        detection_model = YOLO(checkpoint_path)
+
     submission_rows: List[Dict[str, Any]] = []
 
-    print(
-        f"[yolo] imgsz={args.image_size} | tta={args.tta} | conf={args.conf} | "
-        f"iou={args.iou} | tta_iou={args.tta_iou} | merge_boxes={args.merge_boxes}"
-    )
+    if args.inference_mode == "sahi":
+        print(
+            f"[sahi] slice={args.slice_size} | overlap={args.overlap_ratio} | "
+            f"imgsz={args.image_size} | conf={args.conf} | iou={args.iou} | post={args.postprocess_type}"
+        )
+    else:
+        print(
+            f"[original] imgsz={args.image_size} | conf={args.conf} | iou={args.iou} | max_det={args.max_det}"
+        )
 
     for img_path in tqdm(image_files, desc="Inference"):
         if img_path.name not in filename_to_image_id:
             continue
 
-        if args.tta:
-            boxes_xyxy, scores = tta_predict(
-                model=model,
-                img_path=img_path,
-                conf=args.conf,
-                iou=args.iou,
-                tta_iou=args.tta_iou,
-                max_det=args.max_det,
-                imgsz=args.image_size,
-                device=args.device,
+        if args.inference_mode == "sahi":
+            result = get_sliced_prediction(
+                image=str(img_path),
+                detection_model=detection_model,
+                slice_height=args.slice_size,
+                slice_width=args.slice_size,
+                overlap_height_ratio=args.overlap_ratio,
+                overlap_width_ratio=args.overlap_ratio,
+                perform_standard_pred=False,
+                postprocess_type=args.postprocess_type,
+                postprocess_match_metric="IOU",
+                postprocess_match_threshold=args.iou,
+                postprocess_class_agnostic=True,
+                verbose=0,
             )
+
+            object_predictions = result.object_prediction_list[: args.max_det]
+
+            for pred in object_predictions:
+                bbox, score = _prediction_to_xywh_and_score(pred)
+                x, y, w, h = bbox
+                if w <= 0.001 or h <= 0.001:
+                    continue
+
+                submission_rows.append(
+                    {
+                        "image_id": int(filename_to_image_id[img_path.name]),
+                        "category_id": 1,
+                        "bbox": [x, y, w, h],
+                        "score": score,
+                    }
+                )
         else:
-            boxes_xyxy, scores = _predict_single(
-                model=model,
-                img_path=img_path,
+            image_size = _normalize_imgsz(args.image_size)
+            pred_results = detection_model.predict(
+                source=str(img_path),
                 conf=args.conf,
                 iou=args.iou,
+                imgsz=image_size,
                 max_det=args.max_det,
-                imgsz=args.image_size,
                 device=args.device,
+                verbose=False,
             )
 
-        if args.merge_boxes:
-            boxes_xyxy, scores = merge_horizontal_boxes(
-                boxes_xyxy=boxes_xyxy,
-                scores=scores,
-                row_tol_px=args.merge_row_tol,
-                gap_px=args.merge_gap_px,
-            )
-
-        for i, box in enumerate(boxes_xyxy):
-            x1, y1, x2, y2 = [float(v) for v in box]
-            w, h = x2 - x1, y2 - y1
-            if w <= 0.001 or h <= 0.001:
+            if not pred_results:
                 continue
 
-            submission_rows.append(
-                {
-                    "image_id": int(filename_to_image_id[img_path.name]),
-                    "category_id": 1,
-                    "bbox": [x1, y1, float(w), float(h)],
-                    "score": float(scores[i]),
-                }
-            )
+            result = pred_results[0]
+            for box in result.boxes:
+                bbox, score = _yolo_box_to_xywh_and_score(box)
+                x, y, w, h = bbox
+                if w <= 0.001 or h <= 0.001:
+                    continue
+
+                submission_rows.append(
+                    {
+                        "image_id": int(filename_to_image_id[img_path.name]),
+                        "category_id": 1,
+                        "bbox": [x, y, w, h],
+                        "score": score,
+                    }
+                )
 
     num_test_images = len(image_files)
     total_boxes = len(submission_rows)
