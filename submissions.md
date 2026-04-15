@@ -112,15 +112,15 @@ yolov9s 20 epocas sin kfold ni slices ni preentrenamiento
 
 ## comando
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26n --image-size 512 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.006 --lrf 0.03 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 22 --lr 0.01 --lrf 0.1 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
 
 ## resultado mAP val
 
-0.287 
+
 
 ## resultado mAP test teórico
 
-0.31-0.32 
+
 
 ## resultado mAP leaderboard
 
@@ -255,3 +255,33 @@ curriculum learning, un primer entrenamiento con las imagenes limpias sin proble
 
 ## explicacion resultado
 
+
+---------------
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.yolo_train --project-root . --model yolo26s --image-size 640 --batch-size 8 --num-workers 8 --epochs 200
+
+
+
+--------------
+
+por probar
+
+"import albumentations as A
+
+    # Pipeline específico para imágenes de Radar y RFI
+    custom_transforms = [
+        # 1. CLAHE: Obligatorio. Hace que las rayas de RFI brillen muchísimo.
+        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.8),
+        
+        # 2. Brillo/Contraste: Variaciones sutiles para robustez
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        
+        # 3. Blur: Ayuda a la red a ignorar el granulado (speckle noise) del mar
+        A.OneOf([
+            A.MedianBlur(blur_limit=5, p=1.0),
+            A.GaussianBlur(blur_limit=5, p=1.0),
+        ], p=0.3),
+        
+        # 4. Compresión: Simula la pérdida de calidad del satélite
+        A.ImageCompression(quality_lower=80, quality_upper=100, p=0.2)
+    ]"

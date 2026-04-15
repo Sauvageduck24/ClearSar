@@ -23,7 +23,6 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 import os
-import albumentations as A
 import yaml
 from PIL import Image as PILImage
 from tqdm import tqdm
@@ -32,18 +31,6 @@ from tqdm import tqdm
 # ---------------------------------------------------------------------------
 # Reproducibilidad
 # ---------------------------------------------------------------------------
-
-def _ultralytics_supports_train_evolve() -> bool:
-    try:
-        from ultralytics.cfg import DEFAULT_CFG_DICT
-    except Exception:
-        return False
-    return "evolve" in DEFAULT_CFG_DICT
-
-
-def _is_windows() -> bool:
-    return os.name == "nt"
-
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -65,25 +52,27 @@ def _load_coco_metadata(annotation_path: Path) -> tuple[dict, Dict[int, Dict]]:
     images_meta: Dict[int, Dict] = {int(img["id"]): img for img in coco.get("images", [])}
     return coco, images_meta
 
-
-def _split_image_ids_for_val_fraction(
+def _split_image_ids_for_val_fraction_stratified(
+    coco: dict,
     image_ids: list[int],
     val_fraction: float,
     seed: int = 42,
 ) -> tuple[list[int], list[int]]:
-    if not image_ids:
-        raise ValueError("No hay imagenes para dividir")
-    shuffled_ids = image_ids[:]
-    rng = random.Random(seed)
-    rng.shuffle(shuffled_ids)
-    val_count = max(1, int(len(shuffled_ids) * val_fraction)) if len(shuffled_ids) > 1 else 0
-    val_count = min(val_count, len(shuffled_ids) - 1) if len(shuffled_ids) > 1 else 0
-    train_ids = shuffled_ids[:-val_count] if val_count > 0 else shuffled_ids[:]
-    val_ids = shuffled_ids[-val_count:] if val_count > 0 else []
-    if not train_ids and val_ids:
-        train_ids.append(val_ids.pop())
-    return train_ids, val_ids
+    """Split estratificado por presencia de anotaciones"""
+    positive_ids = {int(ann["image_id"]) for ann in coco.get("annotations", [])}
+    pos_group = [img_id for img_id in image_ids if img_id in positive_ids]
+    neg_group = [img_id for img_id in image_ids if img_id not in positive_ids]
 
+    rng = random.Random(seed)
+    rng.shuffle(pos_group)
+    rng.shuffle(neg_group)
+
+    n_val_pos = max(1, int(round(len(pos_group) * val_fraction))) if pos_group else 0
+    n_val_neg = max(1, int(round(len(neg_group) * val_fraction))) if neg_group else 0
+
+    val_ids = sorted(pos_group[:n_val_pos] + neg_group[:n_val_neg])
+    train_ids = sorted(pos_group[n_val_pos:] + neg_group[n_val_neg:])
+    return train_ids, val_ids
 
 def _split_kfold_image_ids(
     image_ids: list[int],
@@ -150,28 +139,6 @@ def _select_candidate_image_ids(
         raise ValueError("No hay imagenes disponibles para entrenar luego de excluir hold-out.")
     return candidate_ids
 
-
-def _parse_image_size(value: str) -> int | List[int]:
-    raw = str(value).strip()
-    if not raw:
-        raise argparse.ArgumentTypeError("--image-size no puede estar vacio")
-    if raw.isdigit():
-        parsed = int(raw)
-        if parsed <= 0:
-            raise argparse.ArgumentTypeError("--image-size debe ser > 0")
-        return parsed
-    cleaned = raw.strip("()[]")
-    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
-    if len(parts) == 2 and all(p.isdigit() for p in parts):
-        h, w = int(parts[0]), int(parts[1])
-        if h <= 0 or w <= 0:
-            raise argparse.ArgumentTypeError("--image-size requiere valores > 0")
-        return [h, w]
-    raise argparse.ArgumentTypeError(
-        "Formato invalido para --image-size. Usa 960 o [512,1024] / (512,1024)."
-    )
-
-
 def _split_train_val_image_ids(
     annotation_path: Path,
     val_fraction: float,
@@ -179,14 +146,13 @@ def _split_train_val_image_ids(
 ) -> tuple[list[int], list[int]]:
     coco, _ = _load_coco_metadata(annotation_path)
     image_ids = sorted({int(img["id"]) for img in coco.get("images", [])})
-    return _split_image_ids_for_val_fraction(image_ids, val_fraction, seed)
+    return _split_image_ids_for_val_fraction_stratified(coco, image_ids, val_fraction, seed)
 
 
 def _convert_coco_to_yolo(
     annotation_path: Path,
     output_labels_dir: Path,
     image_ids: Optional[List[int]] = None,
-    skip_iscrowd: bool = False,
     skip_vertical_boxes: bool = False,
 ) -> None:
     with annotation_path.open("r", encoding="utf-8") as f:
@@ -214,9 +180,6 @@ def _convert_coco_to_yolo(
         anns = anns_by_image.get(img_id, [])
         lines: List[str] = []
         for ann in anns:
-            if skip_iscrowd and int(ann.get("iscrowd", 0)) == 1:
-                continue
-
             x, y, w, h = [float(v) for v in ann["bbox"]]
             if skip_vertical_boxes and h > w:
                 continue
@@ -467,8 +430,6 @@ def _materialize_yolo_dataset(
     train_images_dir: Path,
     train_ids: list[int],
     val_ids: list[int],
-    extra_images_dir: Optional[Path] = None,
-    extra_annotations_path: Optional[Path] = None,
     yaml_filename: str = "clearsar.yaml",
     slice_cfg: Optional[Dict] = None,
     label_filter_cfg: Optional[Dict] = None,
@@ -515,63 +476,27 @@ def _materialize_yolo_dataset(
     _link_images(train_ids, yolo_images_train)
     _link_images(val_ids, yolo_images_val)
 
-    skip_iscrowd = bool(label_filter_cfg and label_filter_cfg.get("skip_iscrowd", False))
     skip_vertical_boxes = bool(
         label_filter_cfg and label_filter_cfg.get("skip_vertical_boxes", False)
     )
-    if skip_iscrowd or skip_vertical_boxes:
+    if skip_vertical_boxes:
         print(
             "[yolo/labels] Filtros activos: "
-            f"skip_iscrowd={skip_iscrowd}, skip_vertical_boxes={skip_vertical_boxes}"
+            f"skip_vertical_boxes={skip_vertical_boxes}"
         )
 
     _convert_coco_to_yolo(
         annotation_path,
         yolo_labels_train,
         train_ids,
-        skip_iscrowd=skip_iscrowd,
         skip_vertical_boxes=skip_vertical_boxes,
     )
     _convert_coco_to_yolo(
         annotation_path,
         yolo_labels_val,
         val_ids,
-        skip_iscrowd=skip_iscrowd,
         skip_vertical_boxes=skip_vertical_boxes,
     )
-
-    # --- Extra dataset ---
-    extra_count = 0
-    if extra_images_dir and extra_annotations_path and extra_annotations_path.exists():
-        with extra_annotations_path.open("r", encoding="utf-8") as f:
-            extra_coco = json.load(f)
-        extra_ids = [int(img["id"]) for img in extra_coco.get("images", [])]
-        extra_meta: Dict[int, Dict] = {int(img["id"]): img for img in extra_coco.get("images", [])}
-
-        for img_id in extra_ids:
-            if img_id not in extra_meta:
-                continue
-            fname = extra_meta[img_id]["file_name"]
-            src = extra_images_dir / fname
-            if not src.exists():
-                continue
-            dst = yolo_images_train / fname
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if not dst.exists():
-                try:
-                    dst.symlink_to(src.resolve())
-                except (OSError, NotImplementedError):
-                    shutil.copy2(src, dst)
-
-        _convert_coco_to_yolo(
-            extra_annotations_path,
-            yolo_labels_train,
-            extra_ids,
-            skip_iscrowd=skip_iscrowd,
-            skip_vertical_boxes=skip_vertical_boxes,
-        )
-        extra_count = len(extra_ids)
-        print(f"[yolo] Extra pseudo dataset: {len(extra_ids)} images added to train")
 
     # --- Slicing ---
     if slice_cfg is not None:
@@ -603,7 +528,7 @@ def _materialize_yolo_dataset(
     with yaml_path.open("w", encoding="utf-8") as f:
         yaml.dump(dataset_cfg, f, default_flow_style=False)
 
-    n_train_with_slices = len(train_ids) + extra_count + (n_slices if slice_cfg else 0)
+    n_train_with_slices = len(train_ids) + (n_slices if slice_cfg else 0)
     print(f"[yolo] Dataset yaml: {yaml_path}")
     print(f"[yolo] Train images (orig + slices): {n_train_with_slices}, Val images: {len(val_ids)}")
     return yaml_path
@@ -616,8 +541,6 @@ def _build_yolo_dataset(
     val_fraction: float,
     seed: int = 42,
     excluded_original_image_ids: Optional[set[int]] = None,
-    extra_images_dir: Optional[Path] = None,
-    extra_annotations_path: Optional[Path] = None,
     slice_cfg: Optional[Dict] = None,
     label_filter_cfg: Optional[Dict] = None,
 ) -> Path:
@@ -628,15 +551,13 @@ def _build_yolo_dataset(
         images_meta=images_meta,
         excluded_original_image_ids=excluded_original_image_ids,
     )
-    train_ids, val_ids = _split_image_ids_for_val_fraction(candidate_ids, val_fraction, seed)
+    train_ids, val_ids = _split_image_ids_for_val_fraction_stratified(coco, candidate_ids, val_fraction, seed)
     return _materialize_yolo_dataset(
         dataset_root=dataset_root,
         annotation_path=annotation_path,
         train_images_dir=train_images_dir,
         train_ids=train_ids,
         val_ids=val_ids,
-        extra_images_dir=extra_images_dir,
-        extra_annotations_path=extra_annotations_path,
         yaml_filename="clearsar.yaml",
         slice_cfg=slice_cfg,
         label_filter_cfg=label_filter_cfg,
@@ -650,8 +571,6 @@ def _build_kfold_yolo_datasets(
     num_folds: int,
     seed: int = 42,
     excluded_original_image_ids: Optional[set[int]] = None,
-    extra_images_dir: Optional[Path] = None,
-    extra_annotations_path: Optional[Path] = None,
     slice_cfg: Optional[Dict] = None,
     label_filter_cfg: Optional[Dict] = None,
 ) -> list[tuple[int, Path]]:
@@ -674,8 +593,6 @@ def _build_kfold_yolo_datasets(
             train_images_dir=train_images_dir,
             train_ids=fold_train_ids,
             val_ids=fold_val_ids,
-            extra_images_dir=extra_images_dir,
-            extra_annotations_path=extra_annotations_path,
             yaml_filename="clearsar.yaml",
             slice_cfg=slice_cfg,
             label_filter_cfg=label_filter_cfg,
@@ -783,8 +700,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
-        "--image-size", type=_parse_image_size, default=960,
-        help="Tamaño de imagen YOLO. Ejemplos: 960 o [512,1024] / (512,1024).",
+        "--image-size", type=int, default=960,
+        help="Tamaño de imagen YOLO (entero). Ejemplo: 960.",
     )
     parser.add_argument(
         "--num-workers", type=int, default=4,
@@ -793,7 +710,7 @@ def parse_args() -> argparse.Namespace:
             "por defecto para evitar errores de memoria compartida."
         ),
     )
-    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lrf", type=float, default=0.01)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument(
@@ -806,22 +723,10 @@ def parse_args() -> argparse.Namespace:
         "--holdout-fraction", type=float, default=0.1,
         help="Fraccion fija para hold-out local sobre imagenes originales (sin slicing).",
     )
-    parser.add_argument("--extra-images-dir", type=str, default=None)
-    parser.add_argument("--extra-annotations-path", type=str, default=None)
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument(
-        "--evolve", type=int, nargs="?", const=100, default=0,
-        help="Enable YOLO hyperparameter evolution. Optional value is generations (default: 100).",
-    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--cache", type=str, default="disk", choices=["disk", "ram", "none"],
         help="Cache mode for Ultralytics dataloader: disk, ram o none.",
-    )
-    parser.add_argument(
-        "--skip-iscrowd",
-        action="store_true",
-        help="Excluye annotations COCO con iscrowd=1 durante la conversion a YOLO.",
     )
     parser.add_argument(
         "--skip-vertical-boxes",
@@ -876,15 +781,8 @@ def main() -> None:
 
     if args.kfold < 1:
         raise ValueError("--kfold debe ser >= 1")
-    if args.kfold > 1 and args.resume:
-        raise ValueError("--resume no es compatible con --kfold > 1")
 
     set_seed(args.seed)
-
-    extra_images_dir = Path(args.extra_images_dir) if args.extra_images_dir else None
-    extra_annotations_path = (
-        Path(args.extra_annotations_path) if args.extra_annotations_path else None
-    )
 
     annotation_path = Path(args.annotation_path)
     if not annotation_path.is_absolute():
@@ -918,14 +816,12 @@ def main() -> None:
         )
 
     label_filter_cfg: Optional[Dict] = None
-    if args.skip_iscrowd or args.skip_vertical_boxes:
+    if args.skip_vertical_boxes:
         label_filter_cfg = {
-            "skip_iscrowd": args.skip_iscrowd,
             "skip_vertical_boxes": args.skip_vertical_boxes,
         }
         print(
             "[yolo/labels] Configuracion: "
-            f"skip_iscrowd={args.skip_iscrowd}, "
             f"skip_vertical_boxes={args.skip_vertical_boxes}"
         )
 
@@ -946,8 +842,6 @@ def main() -> None:
             val_fraction=args.val_fraction,
             seed=args.seed,
             excluded_original_image_ids=holdout_ids,
-            extra_images_dir=extra_images_dir,
-            extra_annotations_path=extra_annotations_path,
             slice_cfg=slice_cfg,
             label_filter_cfg=label_filter_cfg,
         )
@@ -971,45 +865,8 @@ def main() -> None:
     base_run_name = f"clearsar_{model_tag}"
     yolo_runs_dir = project_root / "outputs" / "yolo_runs"
 
-    safe_loader_enabled = _is_windows() and os.environ.get(
-        "CLEARSAR_DISABLE_WIN_DATALOADER_SAFE_MODE", "0"
-    ) != "1"
-
     effective_workers = args.num_workers
     effective_cache_mode = False if args.cache == "none" else args.cache
-
-    if safe_loader_enabled:
-        # Evita fallos de multiprocessing + pin memory en Windows/CUDA.
-        os.environ.setdefault("PIN_MEMORY", "False")
-        if effective_workers > 0:
-            print(
-                "[yolo] Windows safe dataloader: forzando workers=0 "
-                f"(valor recibido: {effective_workers})"
-            )
-            effective_workers = 0
-        if effective_cache_mode == "ram":
-            print("[yolo] Windows safe dataloader: cambiando cache 'ram' -> 'disk'")
-            effective_cache_mode = "disk"
-
-    import albumentations as A
-
-    # Pipeline específico para imágenes de Radar y RFI
-    custom_transforms = [
-        # 1. CLAHE: Obligatorio. Hace que las rayas de RFI brillen muchísimo.
-        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.8),
-        
-        # 2. Brillo/Contraste: Variaciones sutiles para robustez
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        
-        # 3. Blur: Ayuda a la red a ignorar el granulado (speckle noise) del mar
-        A.OneOf([
-            A.MedianBlur(blur_limit=5, p=1.0),
-            A.GaussianBlur(blur_limit=5, p=1.0),
-        ], p=0.3),
-        
-        # 4. Compresión: Simula la pérdida de calidad del satélite
-        A.ImageCompression(quality_lower=80, quality_upper=100, p=0.2)
-    ]
 
     train_kwargs_base = dict(
         data=str(yaml_path),
@@ -1030,7 +887,7 @@ def main() -> None:
         val=True,
         degrees=0.0,
         rect=False,
-        scale=0.5,
+        scale=0.3,
         translate=0.05,
         shear=0.0,
         perspective=0.0,
@@ -1040,24 +897,21 @@ def main() -> None:
         hsv_s=0.0,
         hsv_v=0.0,
         auto_augment=False,
-        mosaic=0.3,
-        close_mosaic=10,
-        copy_paste=0.3,
+        mosaic=1.0,
+        close_mosaic=20,
+        copy_paste=0.5,
         copy_paste_mode="flip",
-        mixup=0.1,
+        mixup=0.0,
         optimizer="AdamW",
         cos_lr=True,
-        warmup_epochs=5,
-        warmup_momentum=0.8,
-        warmup_bias_lr=0.1,
-        box=25.0,
+        warmup_epochs=3,
+        box=15.0,
         cls=0.3,
-        dfl=0.5,
         single_cls=True,
         amp=True,
         verbose=True,
         erasing=0.0,
-        augment=False,
+        augment=True,
     )
 
     if args.device is not None:
@@ -1066,18 +920,6 @@ def main() -> None:
     train_kwargs_base["cache"] = effective_cache_mode
     print(f"[yolo] Cache mode: {effective_cache_mode}")
     print(f"[yolo] DataLoader workers: {effective_workers}")
-    if safe_loader_enabled:
-        print("[yolo] Windows safe dataloader: ON (usa CLEARSAR_DISABLE_WIN_DATALOADER_SAFE_MODE=1 para desactivar)")
-
-    if args.evolve > 0:
-        if _ultralytics_supports_train_evolve():
-            train_kwargs_base["evolve"] = args.evolve
-            print(f"[yolo] Evolve enabled: {args.evolve} generations")
-        else:
-            print(
-                "[yolo] WARNING: esta version de ultralytics no soporta `evolve` en model.train(); "
-                "se ignora --evolve y se continua con entrenamiento normal."
-            )
 
     if args.kfold > 1:
         print(f"[yolo] K-fold enabled: {args.kfold} folds")
@@ -1088,8 +930,6 @@ def main() -> None:
             num_folds=args.kfold,
             seed=args.seed,
             excluded_original_image_ids=holdout_ids,
-            extra_images_dir=extra_images_dir,
-            extra_annotations_path=extra_annotations_path,
             slice_cfg=slice_cfg,
             label_filter_cfg=label_filter_cfg,
         )
@@ -1147,15 +987,6 @@ def main() -> None:
         run_name = base_run_name
 
         train_kwargs = dict(train_kwargs_base)
-        if args.resume:
-            last_ckpt = yolo_runs_dir / run_name / "weights" / "last.pt"
-            if last_ckpt.exists():
-                model = YOLO(str(last_ckpt))
-                train_kwargs["resume"] = True
-                print(f"[yolo] Resuming from {last_ckpt}")
-            else:
-                print(f"[yolo] No checkpoint found at {last_ckpt}, starting fresh")
-
         train_kwargs["name"] = run_name
         model.train(**train_kwargs)
 
