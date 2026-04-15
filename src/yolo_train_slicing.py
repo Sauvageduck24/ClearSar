@@ -186,6 +186,8 @@ def _convert_coco_to_yolo(
     annotation_path: Path,
     output_labels_dir: Path,
     image_ids: Optional[List[int]] = None,
+    skip_iscrowd: bool = False,
+    skip_vertical_boxes: bool = False,
 ) -> None:
     with annotation_path.open("r", encoding="utf-8") as f:
         coco = json.load(f)
@@ -212,7 +214,13 @@ def _convert_coco_to_yolo(
         anns = anns_by_image.get(img_id, [])
         lines: List[str] = []
         for ann in anns:
+            if skip_iscrowd and int(ann.get("iscrowd", 0)) == 1:
+                continue
+
             x, y, w, h = [float(v) for v in ann["bbox"]]
+            if skip_vertical_boxes and h > w:
+                continue
+
             cx = (x + w / 2.0) / img_w
             cy = (y + h / 2.0) / img_h
             nw = w / img_w
@@ -463,6 +471,7 @@ def _materialize_yolo_dataset(
     extra_annotations_path: Optional[Path] = None,
     yaml_filename: str = "clearsar.yaml",
     slice_cfg: Optional[Dict] = None,
+    label_filter_cfg: Optional[Dict] = None,
 ) -> Path:
     """
     Construye la estructura de directorios YOLO y opcionalmente genera strips
@@ -506,8 +515,30 @@ def _materialize_yolo_dataset(
     _link_images(train_ids, yolo_images_train)
     _link_images(val_ids, yolo_images_val)
 
-    _convert_coco_to_yolo(annotation_path, yolo_labels_train, train_ids)
-    _convert_coco_to_yolo(annotation_path, yolo_labels_val, val_ids)
+    skip_iscrowd = bool(label_filter_cfg and label_filter_cfg.get("skip_iscrowd", False))
+    skip_vertical_boxes = bool(
+        label_filter_cfg and label_filter_cfg.get("skip_vertical_boxes", False)
+    )
+    if skip_iscrowd or skip_vertical_boxes:
+        print(
+            "[yolo/labels] Filtros activos: "
+            f"skip_iscrowd={skip_iscrowd}, skip_vertical_boxes={skip_vertical_boxes}"
+        )
+
+    _convert_coco_to_yolo(
+        annotation_path,
+        yolo_labels_train,
+        train_ids,
+        skip_iscrowd=skip_iscrowd,
+        skip_vertical_boxes=skip_vertical_boxes,
+    )
+    _convert_coco_to_yolo(
+        annotation_path,
+        yolo_labels_val,
+        val_ids,
+        skip_iscrowd=skip_iscrowd,
+        skip_vertical_boxes=skip_vertical_boxes,
+    )
 
     # --- Extra dataset ---
     extra_count = 0
@@ -532,7 +563,13 @@ def _materialize_yolo_dataset(
                 except (OSError, NotImplementedError):
                     shutil.copy2(src, dst)
 
-        _convert_coco_to_yolo(extra_annotations_path, yolo_labels_train, extra_ids)
+        _convert_coco_to_yolo(
+            extra_annotations_path,
+            yolo_labels_train,
+            extra_ids,
+            skip_iscrowd=skip_iscrowd,
+            skip_vertical_boxes=skip_vertical_boxes,
+        )
         extra_count = len(extra_ids)
         print(f"[yolo] Extra pseudo dataset: {len(extra_ids)} images added to train")
 
@@ -582,6 +619,7 @@ def _build_yolo_dataset(
     extra_images_dir: Optional[Path] = None,
     extra_annotations_path: Optional[Path] = None,
     slice_cfg: Optional[Dict] = None,
+    label_filter_cfg: Optional[Dict] = None,
 ) -> Path:
     dataset_root = project_root / "data" / "yolo"
     coco, images_meta = _load_coco_metadata(annotation_path)
@@ -601,6 +639,7 @@ def _build_yolo_dataset(
         extra_annotations_path=extra_annotations_path,
         yaml_filename="clearsar.yaml",
         slice_cfg=slice_cfg,
+        label_filter_cfg=label_filter_cfg,
     )
 
 
@@ -614,6 +653,7 @@ def _build_kfold_yolo_datasets(
     extra_images_dir: Optional[Path] = None,
     extra_annotations_path: Optional[Path] = None,
     slice_cfg: Optional[Dict] = None,
+    label_filter_cfg: Optional[Dict] = None,
 ) -> list[tuple[int, Path]]:
     coco, images_meta = _load_coco_metadata(annotation_path)
     candidate_ids = _select_candidate_image_ids(
@@ -638,6 +678,7 @@ def _build_kfold_yolo_datasets(
             extra_annotations_path=extra_annotations_path,
             yaml_filename="clearsar.yaml",
             slice_cfg=slice_cfg,
+            label_filter_cfg=label_filter_cfg,
         )
         fold_specs.append((fold_index, fold_yaml_path))
 
@@ -777,6 +818,16 @@ def parse_args() -> argparse.Namespace:
         "--cache", type=str, default="disk", choices=["disk", "ram", "none"],
         help="Cache mode for Ultralytics dataloader: disk, ram o none.",
     )
+    parser.add_argument(
+        "--skip-iscrowd",
+        action="store_true",
+        help="Excluye annotations COCO con iscrowd=1 durante la conversion a YOLO.",
+    )
+    parser.add_argument(
+        "--skip-vertical-boxes",
+        action="store_true",
+        help="Excluye annotations con bbox vertical (h > w) durante la conversion a YOLO.",
+    )
 
     # --- Slicing ---
     slicing_group = parser.add_argument_group("horizontal slicing")
@@ -865,6 +916,19 @@ def main() -> None:
             f"[yolo/slicing] Configuracion: height={args.slice_height}px, "
             f"overlap={args.slice_overlap}px, min_visibility={args.slice_min_visibility}"
         )
+
+    label_filter_cfg: Optional[Dict] = None
+    if args.skip_iscrowd or args.skip_vertical_boxes:
+        label_filter_cfg = {
+            "skip_iscrowd": args.skip_iscrowd,
+            "skip_vertical_boxes": args.skip_vertical_boxes,
+        }
+        print(
+            "[yolo/labels] Configuracion: "
+            f"skip_iscrowd={args.skip_iscrowd}, "
+            f"skip_vertical_boxes={args.skip_vertical_boxes}"
+        )
+
     print("[yolo] Dataset source: normal")
 
     holdout_yaml_path, holdout_ids = _build_holdout_dataset(
@@ -885,6 +949,7 @@ def main() -> None:
             extra_images_dir=extra_images_dir,
             extra_annotations_path=extra_annotations_path,
             slice_cfg=slice_cfg,
+            label_filter_cfg=label_filter_cfg,
         )
 
     model_arg = args.model
@@ -1026,6 +1091,7 @@ def main() -> None:
             extra_images_dir=extra_images_dir,
             extra_annotations_path=extra_annotations_path,
             slice_cfg=slice_cfg,
+            label_filter_cfg=label_filter_cfg,
         )
 
         fold_results: list[dict] = []

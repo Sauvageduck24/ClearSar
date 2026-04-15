@@ -26,6 +26,7 @@ Nuevos argumentos:
 
 import argparse
 import json
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -35,7 +36,7 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 from tqdm import tqdm
 from ultralytics import YOLO
 
@@ -87,7 +88,9 @@ def _imgsz_for_ultralytics(imgsz: int | list[int]) -> int | list[int]:
 # ---------------------------------------------------------------------------
 
 def _valid_bbox(w: float, h: float) -> bool:
-    return w > MIN_BOX_DIM and h > MIN_BOX_DIM
+    condicion_altura = w > MIN_BOX_DIM and h > MIN_BOX_DIM
+    condicion_no_verticalidad = h < w
+    return condicion_altura and condicion_no_verticalidad
 
 
 def _result_boxes_as_list(result: Any) -> list[list[float]]:
@@ -119,6 +122,11 @@ def _yolo_to_coco_bbox(
     x = (x_center * float(image_width)) - (w / 2.0)
     y = (y_center * float(image_height)) - (h / 2.0)
     return [x, y, w, h]
+
+
+def _coco_bbox_to_xyxy(bbox: list[float]) -> tuple[float, float, float, float]:
+    x, y, w, h = bbox
+    return float(x), float(y), float(x + w), float(y + h)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +238,76 @@ def _gap_fill(
             accepted_slice.append(sb)
 
     return full_boxes + accepted_slice
+
+
+def _draw_labeled_box(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[float, float, float, float],
+    label: str,
+    color: tuple[int, int, int],
+) -> None:
+    x1, y1, x2, y2 = box
+    draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+    if not label:
+        return
+
+    try:
+        text_bbox = draw.textbbox((0, 0), label)
+        text_w = text_bbox[2] - text_bbox[0]
+        text_h = text_bbox[3] - text_bbox[1]
+    except Exception:
+        text_w = max(1, len(label) * 6)
+        text_h = 11
+
+    pad_x = 4
+    pad_y = 2
+    top = max(0, y1 - (text_h + pad_y * 2))
+    draw.rectangle(
+        [x1, top, x1 + text_w + pad_x * 2, top + text_h + pad_y * 2],
+        fill=color,
+    )
+    draw.text((x1 + pad_x, top + pad_y), label, fill=(255, 255, 255))
+
+
+def _save_holdout_visualization(
+    img_path: Path,
+    output_dir: Path,
+    gt_boxes: list[dict[str, Any]],
+    pred_boxes: list[list[float]],
+    class_names: list[str],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with Image.open(img_path) as img:
+        canvas = img.convert("RGB")
+
+    draw = ImageDraw.Draw(canvas)
+    for ann in gt_boxes:
+        bbox = _coco_bbox_to_xyxy(ann["bbox"])
+        class_id = int(ann.get("category_id", 0)) - 1
+        class_name = class_names[class_id] if 0 <= class_id < len(class_names) else str(class_id)
+        _draw_labeled_box(draw, bbox, f"GT {class_name}", (46, 160, 67))
+
+    valid_pred_boxes = []
+    for pred in pred_boxes:
+        x1, y1, x2, y2, score, class_id = pred
+        if _valid_bbox(max(0.0, x2 - x1), max(0.0, y2 - y1)):
+            valid_pred_boxes.append(pred)
+
+    for pred in valid_pred_boxes:
+        x1, y1, x2, y2, score, class_id = pred
+        class_index = int(class_id)
+        class_name = class_names[class_index] if 0 <= class_index < len(class_names) else str(class_index)
+        _draw_labeled_box(draw, (x1, y1, x2, y2), f"PR {class_name} {score:.2f}", (214, 48, 49))
+
+    output_path = output_dir / f"{img_path.stem}.png"
+    canvas.save(output_path)
+
+
+def _prepare_output_dir(output_dir: Path) -> None:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +578,8 @@ def _evaluate_holdout_with_pycocotools(
     slice_max_height_px: int = 32,
     slice_nms_iou: float = 0.3,
     use_slicing: bool = True,
+    save_viz: bool = False,
+    viz_output_dir: Path | None = None,
 ) -> dict[str, dict[str, float]]:
     try:
         from pycocotools.coco import COCO
@@ -513,6 +593,13 @@ def _evaluate_holdout_with_pycocotools(
     coco_gt, filename_to_image_id, image_files = _build_holdout_coco_gt(
         images_dir, labels_dir, class_names
     )
+    annotations_by_image_id: dict[int, list[dict[str, Any]]] = {}
+    if save_viz:
+        if viz_output_dir is None:
+            raise ValueError("viz_output_dir es obligatorio cuando save_viz=True")
+        _prepare_output_dir(viz_output_dir)
+        for ann in coco_gt["annotations"]:
+            annotations_by_image_id.setdefault(int(ann["image_id"]), []).append(ann)
 
     def _compute_coco_metrics(pred_rows: list[dict[str, Any]]) -> dict[str, float]:
         with tempfile.TemporaryDirectory(prefix="clearsar_holdout_eval_") as tmp_dir:
@@ -555,40 +642,26 @@ def _evaluate_holdout_with_pycocotools(
             use_slicing=use_slicing,
         )
 
-        # === HACK PARA EL LEADERBOARD: Engordar las cajas ===
-        # Ajusta estos valores empíricamente. 8.0 px por lado = la caja es 16 px más ancha.
-        padding_x = 8.0 
-        padding_y = 2.0 
-        
-        with Image.open(img_path) as tmp_img:
-            img_w, img_h = tmp_img.size
-        
-        # OJO: Necesitas saber el ancho y alto de la imagen original aquí. 
-        # Si tu script hace resize a 512, pon 512. Si usa el tamaño original, usa esas variables.
-        # Voy a asumir que tienes variables img_w e img_h disponibles (o usa un número grande como 9999).
-        max_w = float(img_w) if 'img_w' in locals() else 9999.0
-        max_h = float(img_h) if 'img_h' in locals() else 9999.0
-
         for x1, y1, x2, y2, score, cls in merged_boxes:
-            # 1. Aplicar el padding expandiendo los límites (sin salirnos de la imagen)
-            nx1 = max(0.0, float(x1) - padding_x)
-            ny1 = max(0.0, float(y1) - padding_y)
-            nx2 = min(max_w, float(x2) + padding_x)
-            ny2 = min(max_h, float(y2) + padding_y)
-
-            # 2. Recalcular el nuevo ancho y alto inflados
-            w = max(0.0, nx2 - nx1)
-            h = max(0.0, ny2 - ny1)
-
+            w = max(0.0, x2 - x1)
+            h = max(0.0, y2 - y1)
             if not _valid_bbox(w, h):
                 continue
-                
             coco_preds.append({
                 "image_id": image_id,
                 "category_id": int(cls) + 1,
-                "bbox": [nx1, ny1, w, h],  # OJO: pasamos nx1 y ny1, no los viejos
+                "bbox": [float(x1), float(y1), w, h],
                 "score": float(score),
             })
+
+        if save_viz:
+            _save_holdout_visualization(
+                img_path=img_path,
+                output_dir=viz_output_dir,
+                gt_boxes=annotations_by_image_id.get(image_id, []),
+                pred_boxes=merged_boxes,
+                class_names=class_names,
+            )
 
     vertical_preds = [r for r in coco_preds if r["bbox"][3] > r["bbox"][2]]
     print(f"[holdout] Boxes verticales: {len(vertical_preds)} de {len(coco_preds)}")
@@ -733,6 +806,13 @@ def parse_args() -> argparse.Namespace:
             "Bajo para tolerar solapamiento parcial de boxes finos."
         ),
     )
+    slicing_group.add_argument(
+        "--save-holdout-viz", action="store_true",
+        help=(
+            "Guarda en outputs/holdout_inference una imagen por sample de holdout "
+            "con boxes esperados y predichos superpuestos."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -788,6 +868,8 @@ def main() -> None:
         print("EVALUACION HOLDOUT")
         print("=" * 50)
 
+        holdout_viz_dir = project_root / "outputs" / "holdout_inference"
+
         holdout_metrics = _evaluate_holdout_with_pycocotools(
             model=detection_model,
             holdout_yaml_path=holdout_yaml_path,
@@ -801,6 +883,8 @@ def main() -> None:
             slice_max_height_px=args.slice_max_height_px,
             slice_nms_iou=args.slice_nms_iou,
             use_slicing=use_slicing,
+            save_viz=args.save_holdout_viz,
+            viz_output_dir=holdout_viz_dir if args.save_holdout_viz else None,
         )
         base = holdout_metrics["result"]
         print(
@@ -809,6 +893,8 @@ def main() -> None:
             f"map75={base['map75']:.4f} | "
             f"recall={base['recall']:.4f}"
         )
+        if args.save_holdout_viz:
+            print(f"[holdout] visualizaciones guardadas en: {holdout_viz_dir}")
 
         if args.mode == "holdout":
             return

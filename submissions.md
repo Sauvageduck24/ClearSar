@@ -112,7 +112,7 @@ yolov9s 20 epocas sin kfold ni slices ni preentrenamiento
 
 ## comando
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26n --image-size 512 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.006 --lrf 0.03 --epochs 20 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_final.json" --yolo-inference="--no-slicing"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26n --image-size 512 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.006 --lrf 0.03 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
 
 ## resultado mAP val
 
