@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pandas as pd
 import torch
+import yaml
+from PIL import Image
 from tqdm import tqdm
 from ultralytics import YOLO
 
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"})
+DEFAULT_CONF = 0.005
+DEFAULT_IOU = 0.7
+DEFAULT_MAX_DET = 500
+MIN_BOX_DIM = 0.001
 
-
-def _parse_image_size(value: str) -> int | List[int]:
+def _parse_image_size(value: str) -> int | list[int]:
     raw = str(value).strip()
     if not raw:
         raise argparse.ArgumentTypeError("--image-size no puede estar vacio")
@@ -26,8 +32,7 @@ def _parse_image_size(value: str) -> int | List[int]:
             raise argparse.ArgumentTypeError("--image-size debe ser > 0")
         return parsed
 
-    cleaned = raw.strip("()[]")
-    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    parts = [p.strip() for p in raw.strip("()[]").split(",") if p.strip()]
     if len(parts) == 2 and all(p.isdigit() for p in parts):
         h, w = int(parts[0]), int(parts[1])
         if h <= 0 or w <= 0:
@@ -39,7 +44,7 @@ def _parse_image_size(value: str) -> int | List[int]:
     )
 
 
-def _normalize_imgsz(imgsz: int | List[int]) -> tuple[int, int]:
+def _normalize_imgsz(imgsz: int | list[int]) -> tuple[int, int]:
     if isinstance(imgsz, list):
         if len(imgsz) != 2:
             raise ValueError("--image-size como lista debe tener exactamente 2 valores")
@@ -47,14 +52,276 @@ def _normalize_imgsz(imgsz: int | List[int]) -> tuple[int, int]:
     return int(imgsz), int(imgsz)
 
 
+def _imgsz_for_ultralytics(imgsz: int | list[int]) -> int | list[int]:
+    h, w = _normalize_imgsz(imgsz)
+    return h if h == w else [h, w]
+
+
+def _result_boxes_as_list(result: Any) -> list[list[float]]:
+    boxes_as_list: list[list[float]] = []
+    if result is None or result.boxes is None:
+        return boxes_as_list
+
+    for box in result.boxes:
+        x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
+        score = float(box.conf[0].item()) if box.conf is not None else 0.0
+        class_id = int(box.cls[0].item()) if box.cls is not None else 0
+        boxes_as_list.append([x1, y1, x2, y2, score, class_id])
+
+    return boxes_as_list
+
+
+def _merged_submission_rows(
+    pred_result: Any,
+    image_id: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    merged_boxes = _result_boxes_as_list(pred_result)
+    for x1, y1, x2, y2, score, class_id in merged_boxes:
+        w = max(0.0, float(x2) - float(x1))
+        h = max(0.0, float(y2) - float(y1))
+        if not _valid_bbox(w, h):
+            continue
+        rows.append(
+            {
+                "image_id": image_id,
+                "category_id": int(class_id) + 1,
+                "bbox": [float(x1), float(y1), w, h],
+                "score": float(score),
+            }
+        )
+    return rows
+
+
+def _valid_bbox(w: float, h: float) -> bool:
+    return w > MIN_BOX_DIM and h > MIN_BOX_DIM
+
+
+def _yolo_box_to_xywh_and_score(box: Any) -> tuple[list[float], float]:
+    x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
+    score = float(box.conf[0].item()) if box.conf is not None else 0.0
+    return [x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1)], score
+
+
+def _yolo_to_coco_bbox(
+    x_center: float,
+    y_center: float,
+    width: float,
+    height: float,
+    image_width: int,
+    image_height: int,
+) -> list[float]:
+    w = max(0.0, width * float(image_width))
+    h = max(0.0, height * float(image_height))
+    x = (x_center * float(image_width)) - (w / 2.0)
+    y = (y_center * float(image_height)) - (h / 2.0)
+    return [x, y, w, h]
+
+
+def _parse_holdout_yaml(holdout_yaml_path: Path) -> tuple[Path, Path, list[str]]:
+    if not holdout_yaml_path.exists():
+        raise FileNotFoundError(f"No existe holdout-yaml: {holdout_yaml_path}")
+
+    payload = yaml.safe_load(holdout_yaml_path.read_text(encoding="utf-8")) or {}
+    root = Path(payload.get("path", holdout_yaml_path.parent))
+    if not root.is_absolute():
+        root = (holdout_yaml_path.parent / root).resolve()
+
+    val_value = str(payload.get("val", "images/val"))
+    images_dir = (root / val_value).resolve()
+    labels_dir = (root / val_value.replace("images", "labels", 1)).resolve()
+
+    names = payload.get("names", [])
+    if isinstance(names, dict):
+        ordered_keys = sorted(names.keys(), key=lambda k: int(k))
+        class_names = [str(names[k]) for k in ordered_keys]
+    else:
+        class_names = [str(name) for name in names]
+
+    if not class_names:
+        num_classes = int(payload.get("nc", 0))
+        class_names = [f"class_{i}" for i in range(num_classes)]
+
+    if not images_dir.is_dir():
+        raise FileNotFoundError(f"No existe carpeta de imagenes holdout: {images_dir}")
+    if not labels_dir.is_dir():
+        raise FileNotFoundError(f"No existe carpeta de labels holdout: {labels_dir}")
+
+    return images_dir, labels_dir, class_names
+
+
+def _build_holdout_coco_gt(
+    images_dir: Path,
+    labels_dir: Path,
+    class_names: list[str],
+) -> tuple[dict[str, Any], dict[str, int], list[Path]]:
+    image_files = [p for p in sorted(images_dir.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+    if not image_files:
+        raise ValueError(f"No hay imagenes en holdout: {images_dir}")
+
+    images: list[dict[str, Any]] = []
+    annotations: list[dict[str, Any]] = []
+    filename_to_image_id: dict[str, int] = {}
+    ann_id = 1
+
+    for idx, img_path in enumerate(image_files, start=1):
+        with Image.open(img_path) as image_obj:
+            img_w, img_h = image_obj.size
+
+        image_id = int(img_path.stem) if img_path.stem.isdigit() else idx
+        filename_to_image_id[img_path.name] = image_id
+        images.append(
+            {
+                "id": image_id,
+                "file_name": img_path.name,
+                "width": img_w,
+                "height": img_h,
+            }
+        )
+
+        label_path = labels_dir / f"{img_path.stem}.txt"
+        if not label_path.exists():
+            continue
+
+        for raw_line in label_path.read_text(encoding="utf-8").splitlines():
+            parts = raw_line.strip().split()
+            if len(parts) < 5:
+                continue
+            class_id = int(float(parts[0]))
+            x_center, y_center, width, height = map(float, parts[1:5])
+            x, y, w, h = _yolo_to_coco_bbox(x_center, y_center, width, height, img_w, img_h)
+            if not _valid_bbox(w, h):
+                continue
+            annotations.append(
+                {
+                    "id": ann_id,
+                    "image_id": image_id,
+                    "category_id": class_id + 1,
+                    "bbox": [x, y, w, h],
+                    "area": float(w * h),
+                    "iscrowd": 0,
+                }
+            )
+            ann_id += 1
+
+    categories = [{"id": i + 1, "name": name} for i, name in enumerate(class_names)]
+    coco_gt = {"images": images, "annotations": annotations, "categories": categories}
+    return coco_gt, filename_to_image_id, image_files
+
+
+def _evaluate_holdout_with_pycocotools(
+    model: YOLO,
+    holdout_yaml_path: Path,
+    imgsz: int | list[int],
+    conf: float,
+    iou: float,
+    max_det: int,
+    device: str,
+) -> dict[str, dict[str, float]]:
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except ImportError as exc:
+        raise ImportError(
+            "pycocotools no esta instalado. Instala con: pip install pycocotools"
+        ) from exc
+
+    images_dir, labels_dir, class_names = _parse_holdout_yaml(holdout_yaml_path)
+    coco_gt, filename_to_image_id, image_files = _build_holdout_coco_gt(images_dir, labels_dir, class_names)
+
+    def _compute_coco_metrics(pred_rows: list[dict[str, Any]]) -> dict[str, float]:
+        with tempfile.TemporaryDirectory(prefix="clearsar_holdout_eval_") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            gt_json = tmp_path / "gt.json"
+            pred_json = tmp_path / "pred.json"
+            gt_json.write_text(json.dumps(coco_gt), encoding="utf-8")
+            pred_json.write_text(json.dumps(pred_rows), encoding="utf-8")
+
+            coco_gt_api = COCO(str(gt_json))
+            coco_dt_api = coco_gt_api.loadRes(str(pred_json))
+            coco_eval = COCOeval(coco_gt_api, coco_dt_api, iouType="bbox")
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+
+        return {
+            "map50_95": float(coco_eval.stats[0]),
+            "map50": float(coco_eval.stats[1]),
+            "map75": float(coco_eval.stats[2]),
+            "recall": float(coco_eval.stats[8]),
+        }
+
+    coco_preds: list[dict[str, Any]] = []
+    for img_path in tqdm(image_files, desc="Holdout (pycocotools)"):
+        image_id = filename_to_image_id[img_path.name]
+        pred_results = model.predict(
+            source=str(img_path),
+            conf=conf,
+            iou=iou,
+            imgsz=_imgsz_for_ultralytics(imgsz),
+            max_det=max_det,
+            augment=False,
+            device=device,
+            verbose=False,
+        )
+        if not pred_results or pred_results[0].boxes is None:
+            continue
+
+        for box in pred_results[0].boxes:
+            bbox_xywh, score = _yolo_box_to_xywh_and_score(box)
+            _, _, w, h = bbox_xywh
+            if not _valid_bbox(w, h):
+                continue
+            coco_preds.append(
+                {
+                    "image_id": image_id,
+                    "category_id": int(box.cls[0].item()) + 1,
+                    "bbox": [float(v) for v in bbox_xywh],
+                    "score": float(score),
+                }
+            )
+
+    vertical_preds = [r for r in coco_preds if r["bbox"][3] > r["bbox"][2]]
+    print(f"[holdout/pycoco] Boxes verticales: {len(vertical_preds)} de {len(coco_preds)}")
+
+    print("\n[holdout/pycoco] mAP SIN split_vertical_predictions")
+    metrics_without_split = _compute_coco_metrics(coco_preds)
+
+    return {
+        "without_split": metrics_without_split,
+    }
+
+
+def validate_submission_schema(rows: list[dict[str, Any]]) -> None:
+    for i, row in enumerate(rows):
+        for key in ("image_id", "category_id", "bbox", "score"):
+            if key not in row:
+                raise ValueError(f"Fila {i} sin key requerida '{key}'")
+        bbox = row["bbox"]
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"Fila {i} tiene bbox invalido: {bbox}")
+
+
+def save_submission_auto(rows: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(rows)
+
+    if output_path.suffix.lower() == ".json":
+        output_path.write_text(payload, encoding="utf-8")
+        return
+
+    zip_path = output_path if output_path.suffix.lower() == ".zip" else output_path.with_suffix(".zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("submission.json", payload)
+
+
 def get_train_stats(json_path: Path) -> float:
     if not json_path.exists():
         return 0.0
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     num_images = len(data.get("images", []))
     num_anns = len(data.get("annotations", []))
-    return num_anns / num_images if num_images > 0 else 0.0
+    return num_anns / num_images if num_images else 0.0
 
 
 def _load_test_id_mapping(test_images_dir: Path, mapping_path: Path) -> dict[str, int]:
@@ -65,279 +332,139 @@ def _load_test_id_mapping(test_images_dir: Path, mapping_path: Path) -> dict[str
     if "id" not in df.columns:
         raise ValueError(f"El parquet no contiene columna 'id': {mapping_path}")
 
-    mapping: dict[str, int] = {}
-    for item_id in df["id"].astype(str).tolist():
-        normalized = item_id.replace("\\", "/")
-        if "/images/test/" not in normalized:
-            continue
+    mapping = {
+        Path(normalized).name: int(Path(normalized).stem)
+        for item_id in df["id"].astype(str)
+        if "/images/test/" in (normalized := item_id.replace("\\", "/"))
+        and Path(normalized).stem.isdigit()
+    }
 
-        file_name = Path(normalized).name
-        stem = Path(file_name).stem
-        if not stem.isdigit():
-            continue
-
-        mapping[file_name] = int(stem)
-
-    test_files = [
-        p.name
-        for p in sorted(test_images_dir.iterdir())
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    ]
-
+    test_files = [p.name for p in sorted(test_images_dir.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
     missing = [name for name in test_files if name not in mapping]
     if missing:
-        preview = ", ".join(missing[:5])
         raise ValueError(
             "Faltan IDs para imagenes de test en el mapping parquet. "
-            f"Ejemplos: {preview}"
+            f"Ejemplos: {', '.join(missing[:5])}"
         )
 
     return mapping
 
 
-def _prediction_to_xywh_and_score(prediction: Any) -> tuple[list[float], float]:
-    bbox_obj = prediction.bbox
-    if hasattr(bbox_obj, "to_xywh"):
-        x, y, w, h = bbox_obj.to_xywh()
-    else:
-        x = float(bbox_obj.minx)
-        y = float(bbox_obj.miny)
-        w = float(bbox_obj.maxx - bbox_obj.minx)
-        h = float(bbox_obj.maxy - bbox_obj.miny)
-
-    score_obj = prediction.score
-    if hasattr(score_obj, "value"):
-        score = float(score_obj.value)
-    else:
-        score = float(score_obj)
-
-    return [float(x), float(y), float(w), float(h)], score
-
-
-def _yolo_box_to_xywh_and_score(box: Any) -> tuple[list[float], float]:
-    xyxy = box.xyxy[0].tolist()
-    x1, y1, x2, y2 = [float(v) for v in xyxy]
-    w = max(0.0, x2 - x1)
-    h = max(0.0, y2 - y1)
-    score = float(box.conf[0].item()) if box.conf is not None else 0.0
-    return [x1, y1, w, h], score
-
-
-def validate_submission_schema(rows: list[dict[str, Any]]) -> None:
-    for i, row in enumerate(rows):
-        for key in ["image_id", "category_id", "bbox", "score"]:
-            if key not in row:
-                raise ValueError(f"Fila {i} sin key requerida '{key}'")
-
-        bbox = row["bbox"]
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            raise ValueError(f"Fila {i} tiene bbox invalido: {bbox}")
-
-
-def save_submission_auto(rows: list[dict[str, Any]], output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if output_path.suffix.lower() == ".json":
-        output_path.write_text(json.dumps(rows), encoding="utf-8")
-        return
-
-    if output_path.suffix.lower() == ".zip":
-        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("submission.json", json.dumps(rows))
-        return
-
-    # Por defecto, guardar como .zip con submission.json
-    zip_path = output_path.with_suffix(".zip")
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("submission.json", json.dumps(rows))
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="YOLO inference for ClearSAR")
-    parser.add_argument("--project-root", type=str, default=None)
-    parser.add_argument("--checkpoint", type=str, required=True, help="Ruta al archivo best.pt")
-    parser.add_argument("--mapping-path", type=str, default="catalog.v1.parquet")
-    parser.add_argument("--test-images-dir", type=str, default="data/images/test")
-    parser.add_argument("--output", type=str, default="outputs/submission_yolo.zip")
-    parser.add_argument("--conf", type=float, default=0.1, help="Umbral de confianza")
-    parser.add_argument("--iou", type=float, default=0.5, help="Umbral IOU para fusion entre slices")
-    parser.add_argument("--max-det", type=int, default=500, help="Maximo detecciones por imagen")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--project-root", default=None)
+    parser.add_argument("--checkpoint", required=True, help="Ruta al archivo best.pt")
     parser.add_argument(
-        "--inference-mode",
-        type=str,
-        default="sahi",
-        choices=["sahi", "original"],
-        help="Modo de inferencia: 'sahi' usa slicing, 'original' usa imagen completa.",
+        "--mode",
+        default="both",
+        choices=["test", "holdout", "both"],
+        help="Modo de ejecucion: holdout evalua metricas; test genera submission; both ejecuta holdout y luego test.",
     )
-    parser.add_argument("--slice-size", type=int, default=256, help="Tamano de cada slice para inferencia SAHI")
-    parser.add_argument("--overlap-ratio", type=float, default=0.25, help="Overlap relativo entre slices")
-    parser.add_argument(
-        "--postprocess-type",
-        type=str,
-        default="GREEDYNMM",
-        choices=["NMM", "NMS", "GREEDYNMM", "LSNMS"],
-        help="Metodo de fusion de predicciones entre slices.",
-    )
+    parser.add_argument("--mapping-path", default="catalog.v1.parquet")
+    parser.add_argument("--test-images-dir", default="data/images/test")
+    parser.add_argument("--holdout-yaml", default="data/yolo/holdout.yaml")
+    parser.add_argument("--output", default="outputs/submission_yolo.zip")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument(
         "--image-size",
         type=_parse_image_size,
         default=640,
-        help="Tamano de entrada del detector por slice. Ejemplos: 640 o [512,1024] / (512,1024).",
+        help="Tamano de entrada del detector. Ejemplos: 640 o [512,1024].",
     )
     return parser.parse_args()
 
 
 def main() -> None:
-    AutoDetectionModel = None
-    get_sliced_prediction = None
-    try:
-        from sahi import AutoDetectionModel as _AutoDetectionModel
-        from sahi.predict import get_sliced_prediction as _get_sliced_prediction
-        AutoDetectionModel = _AutoDetectionModel
-        get_sliced_prediction = _get_sliced_prediction
-    except ImportError:
-        # Solo requerido si se usa --inference-mode sahi.
-        pass
-
     args = parse_args()
+
+    def _resolve(path_str: str, root: Path) -> Path:
+        p = Path(path_str)
+        return p if p.is_absolute() else root / p
+
     project_root = Path(args.project_root).resolve() if args.project_root else Path(__file__).resolve().parents[1]
+    mapping_path = _resolve(args.mapping_path, project_root)
+    test_images_dir = _resolve(args.test_images_dir, project_root)
+    holdout_yaml_path = _resolve(args.holdout_yaml, project_root)
+    output_path = _resolve(args.output, project_root)
+    checkpoint_path = str(Path(args.checkpoint).resolve())
+    best_iou, best_max_det = DEFAULT_IOU, DEFAULT_MAX_DET
 
-    mapping_path = Path(args.mapping_path)
-    if not mapping_path.is_absolute():
-        mapping_path = project_root / mapping_path
-
-    test_images_dir = Path(args.test_images_dir)
-    if not test_images_dir.is_absolute():
-        test_images_dir = project_root / test_images_dir
-
-    output_path = Path(args.output)
-    if not output_path.is_absolute():
-        output_path = project_root / output_path
-
-    if not test_images_dir.exists() or not test_images_dir.is_dir():
-        raise FileNotFoundError(f"No existe test-images-dir: {test_images_dir}")
-
-    train_json = project_root / "data" / "annotations" / "instances_train.json"
-    avg_train = get_train_stats(train_json)
-
-    filename_to_image_id = _load_test_id_mapping(
-        test_images_dir=test_images_dir,
-        mapping_path=mapping_path,
+    detection_model = YOLO(checkpoint_path)
+    print(
+        f"[inference] imgsz={args.image_size} | conf={DEFAULT_CONF} | iou={best_iou} "
+        f"| max_det={best_max_det}"
     )
 
-    image_files = [
-        p
-        for p in sorted(test_images_dir.iterdir())
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    ]
-
-    checkpoint_path = str(Path(args.checkpoint).resolve())
-
-    if args.inference_mode == "sahi":
-        if AutoDetectionModel is None or get_sliced_prediction is None:
-            raise ImportError(
-                "SAHI no esta instalado. Instala dependencias con: pip install sahi ultralytics"
-            )
-        detection_model = AutoDetectionModel.from_pretrained(
-            model_type="ultralytics",
-            model_path=checkpoint_path,
-            confidence_threshold=args.conf,
+    if args.mode in ("holdout", "both"):
+        print("\n" + "=" * 40)
+        print("EVALUACION HOLDOUT (modo test-like)")
+        print("=" * 40)
+        holdout_metrics = _evaluate_holdout_with_pycocotools(
+            model=detection_model,
+            holdout_yaml_path=holdout_yaml_path,
+            imgsz=args.image_size,
+            conf=DEFAULT_CONF,
+            iou=best_iou,
+            max_det=best_max_det,
             device=args.device,
-            image_size=_normalize_imgsz(args.image_size),
         )
-    else:
-        detection_model = YOLO(checkpoint_path)
-
-    submission_rows: List[Dict[str, Any]] = []
-
-    if args.inference_mode == "sahi":
+        base = holdout_metrics["without_split"]
         print(
-            f"[sahi] slice={args.slice_size} | overlap={args.overlap_ratio} | "
-            f"imgsz={args.image_size} | conf={args.conf} | iou={args.iou} | post={args.postprocess_type}"
+            f"[holdout/pycoco][sin split] map50-95={base['map50_95']:.4f} "
+            f"| map50={base['map50']:.4f} | map75={base['map75']:.4f} | recall={base['recall']:.4f}"
         )
-    else:
-        print(
-            f"[original] imgsz={args.image_size} | conf={args.conf} | iou={args.iou} | max_det={args.max_det}"
-        )
+        
+        if args.mode == "holdout":
+            return
+
+        print("\n" + "=" * 40)
+        print("INFERENCIA EN TEST")
+        print("=" * 40)
+
+    if not test_images_dir.is_dir():
+        raise FileNotFoundError(f"No existe test-images-dir: {test_images_dir}")
+
+    avg_train = get_train_stats(project_root / "data" / "annotations" / "instances_train.json")
+    filename_to_image_id = _load_test_id_mapping(test_images_dir, mapping_path)
+    image_files = [p for p in sorted(test_images_dir.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+
+    submission_rows: list[dict[str, Any]] = []
 
     for img_path in tqdm(image_files, desc="Inference"):
         if img_path.name not in filename_to_image_id:
             continue
 
-        if args.inference_mode == "sahi":
-            result = get_sliced_prediction(
-                image=str(img_path),
-                detection_model=detection_model,
-                slice_height=args.slice_size,
-                slice_width=args.slice_size,
-                overlap_height_ratio=args.overlap_ratio,
-                overlap_width_ratio=args.overlap_ratio,
-                perform_standard_pred=False,
-                postprocess_type=args.postprocess_type,
-                postprocess_match_metric="IOU",
-                postprocess_match_threshold=args.iou,
-                postprocess_class_agnostic=True,
-                verbose=0,
+        image_id = int(filename_to_image_id[img_path.name])
+        pred_results = detection_model.predict(
+            source=str(img_path),
+            conf=DEFAULT_CONF,
+            iou=best_iou,
+            imgsz=_imgsz_for_ultralytics(args.image_size),
+            max_det=best_max_det,
+            augment=False,
+            device=args.device,
+            verbose=False,
+        )
+
+        if not pred_results:
+            continue
+
+        submission_rows.extend(
+            _merged_submission_rows(
+                pred_result=pred_results[0],
+                image_id=image_id,
             )
+        )
 
-            object_predictions = result.object_prediction_list[: args.max_det]
-
-            for pred in object_predictions:
-                bbox, score = _prediction_to_xywh_and_score(pred)
-                x, y, w, h = bbox
-                if w <= 0.001 or h <= 0.001:
-                    continue
-
-                submission_rows.append(
-                    {
-                        "image_id": int(filename_to_image_id[img_path.name]),
-                        "category_id": 1,
-                        "bbox": [x, y, w, h],
-                        "score": score,
-                    }
-                )
-        else:
-            image_size = _normalize_imgsz(args.image_size)
-            pred_results = detection_model.predict(
-                source=str(img_path),
-                conf=args.conf,
-                iou=args.iou,
-                imgsz=image_size,
-                max_det=args.max_det,
-                device=args.device,
-                verbose=False,
-            )
-
-            if not pred_results:
-                continue
-
-            result = pred_results[0]
-            for box in result.boxes:
-                bbox, score = _yolo_box_to_xywh_and_score(box)
-                x, y, w, h = bbox
-                if w <= 0.001 or h <= 0.001:
-                    continue
-
-                submission_rows.append(
-                    {
-                        "image_id": int(filename_to_image_id[img_path.name]),
-                        "category_id": 1,
-                        "bbox": [x, y, w, h],
-                        "score": score,
-                    }
-                )
-
-    num_test_images = len(image_files)
     total_boxes = len(submission_rows)
-    avg_test = total_boxes / num_test_images if num_test_images > 0 else 0.0
+    avg_test = total_boxes / len(image_files) if image_files else 0.0
 
-    print("\n" + "=" * 40)
+    print(f"\n{'=' * 40}")
     print("RESUMEN DE DENSIDAD")
     print(f"Promedio en TRAIN: {avg_train:.2f} cajas/img")
     print(f"Promedio en TEST:  {avg_test:.2f} cajas/img")
     print(f"Total cajas:       {total_boxes}")
-    print("=" * 40 + "\n")
+    print(f"{'=' * 40}\n")
 
     validate_submission_schema(submission_rows)
     save_submission_auto(submission_rows, output_path)

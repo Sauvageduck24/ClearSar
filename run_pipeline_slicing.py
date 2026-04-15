@@ -83,6 +83,17 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Habilitar evolve para YOLO (generaciones opcionales).",
     )
+    parser.add_argument(
+        "--curriculum-learning",
+        action="store_true",
+        help="Reenviar --curriculum-learning a src.yolo_train_slicing.",
+    )
+    parser.add_argument(
+        "--curriculum-epochs",
+        type=int,
+        default=None,
+        help="Reenviar --curriculum-epochs a src.yolo_train_slicing.",
+    )
     return parser.parse_args()
 
 
@@ -159,7 +170,7 @@ def main() -> None:
         yolo_train_cmd = [
             python_exe,
             "-m",
-            "src.yolo_train",
+            "src.yolo_train_slicing",
             "--project-root",
             str(project_root),
             "--model",
@@ -174,6 +185,13 @@ def main() -> None:
             yolo_train_cmd.extend(["--cache", args.cache])
         if args.evolve > 0 and not _has_arg(yolo_extra_tokens, "--evolve"):
             yolo_train_cmd.extend(["--evolve", str(args.evolve)])
+        if args.curriculum_learning and not _has_arg(yolo_extra_tokens, "--curriculum-learning"):
+            yolo_train_cmd.append("--curriculum-learning")
+        if (
+            args.curriculum_epochs is not None
+            and not _has_arg(yolo_extra_tokens, "--curriculum-epochs")
+        ):
+            yolo_train_cmd.extend(["--curriculum-epochs", str(args.curriculum_epochs)])
 
         _run_step("yolo-train", yolo_train_cmd, cwd=project_root)
 
@@ -196,7 +214,7 @@ def main() -> None:
         yolo_infer_cmd = [
             python_exe,
             "-m",
-            "src.yolo_inference",
+            "src.yolo_inference_slicing",
             "--project-root",
             str(project_root),
             "--checkpoint",

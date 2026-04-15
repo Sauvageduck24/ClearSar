@@ -11,6 +11,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+
+def _pct(count: int, total: int) -> float:
+    return (count / total * 100.0) if total else 0.0
+
+
+def _print_value_summary(label: str, values: list[float], unit: str) -> None:
+    if not values:
+        print(f"    {label:<22}: sin datos")
+        return
+
+    print(
+        f"    {label:<22}: min={min(values):.1f} {unit}  "
+        f"p25={np.percentile(values, 25):.1f} {unit}  "
+        f"mediana={np.median(values):.1f} {unit}  "
+        f"p75={np.percentile(values, 75):.1f} {unit}  "
+        f"max={max(values):.1f} {unit}  "
+        f"media={np.mean(values):.1f} {unit}"
+    )
+
+
+def _print_threshold_table(title: str, values: list[float], thresholds: list[float], unit: str) -> None:
+    print(f"  {title}")
+    print("  " + "-" * 40)
+    total = len(values)
+    for threshold in thresholds:
+        count = sum(1 for value in values if value > threshold)
+        print(f"    > {threshold:>4g} {unit}: {count:6d}  ({_pct(count, total):5.1f}%)")
+    print()
+
 # ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
 ANNOTATIONS_FILE = "data/annotations/instances_train.json"
 TRAIN_IMG_DIR    = "data/images/train"
@@ -132,6 +161,10 @@ print(f"    Alto   — min:{min(bb_heights):.0f} max:{max(bb_heights):.0f} media
 print(f"    Área   — min:{min(bb_areas):.0f}  max:{max(bb_areas):.0f}  media:{np.mean(bb_areas):.1f}")
 print(f"    Área relativa (% img) — media:{np.mean(rel_areas):.2f}%  mediana:{np.median(rel_areas):.2f}%")
 print(f"    Aspect ratio (w/h)    — media:{np.mean(bb_aspects):.2f}  mediana:{np.median(bb_aspects):.2f}")
+_print_value_summary("Ancho bbox", bb_widths, "px")
+_print_value_summary("Alto bbox", bb_heights, "px")
+_print_value_summary("Área bbox", bb_areas, "px²")
+_print_value_summary("Área rel. img", rel_areas, "%")
 print()
 
 # Clasificar por tamaño COCO: small<32², medium<96², large>=96²
@@ -142,6 +175,26 @@ print(f"    Pequeño  (<1024 px²) : {small:5d}  ({small/n_annotations*100:.1f}%
 print(f"    Mediano  (1024–9216) : {medium:5d}  ({medium/n_annotations*100:.1f}%)")
 print(f"    Grande   (>9216 px²) : {large:5d}  ({large/n_annotations*100:.1f}%)")
 print()
+
+print("  UMBRALES DE BOUNDING BOXES")
+print("  " + "-" * 40)
+total_boxes = len(annotations)
+width_gt_256 = sum(1 for value in bb_widths if value > 256)
+height_gt_256 = sum(1 for value in bb_heights if value > 256)
+either_gt_256 = sum(1 for w, h in zip(bb_widths, bb_heights) if w > 256 or h > 256)
+both_gt_256 = sum(1 for w, h in zip(bb_widths, bb_heights) if w > 256 and h > 256)
+area_gt_2562 = sum(1 for value in bb_areas if value > 256**2)
+
+print(f"    Boxes con ancho  > 256 px : {width_gt_256:6d}  ({_pct(width_gt_256, total_boxes):5.1f}%)")
+print(f"    Boxes con alto   > 256 px : {height_gt_256:6d}  ({_pct(height_gt_256, total_boxes):5.1f}%)")
+print(f"    Boxes con ancho o alto > 256 px : {either_gt_256:6d}  ({_pct(either_gt_256, total_boxes):5.1f}%)")
+print(f"    Boxes con ancho y alto > 256 px : {both_gt_256:6d}  ({_pct(both_gt_256, total_boxes):5.1f}%)")
+print(f"    Boxes con área > 256² px² : {area_gt_2562:6d}  ({_pct(area_gt_2562, total_boxes):5.1f}%)")
+print()
+
+_print_threshold_table("Por ancho", bb_widths, [32, 64, 128, 256, 512], "px")
+_print_threshold_table("Por alto", bb_heights, [32, 64, 128, 256, 512], "px")
+_print_threshold_table("Por área", bb_areas, [32**2, 64**2, 128**2, 256**2], "px²")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GRÁFICOS

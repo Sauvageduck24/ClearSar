@@ -1,0 +1,6 @@
+names:
+- RFI
+nc: 1
+path: E:\Sauvageduck24\ClearSar\data\yolo\holdout
+train: images/val
+val: images/val
