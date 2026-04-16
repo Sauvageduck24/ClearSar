@@ -112,7 +112,7 @@ yolov9s 20 epocas sin kfold ni slices ni preentrenamiento
 
 ## comando
 
-/usr/bin/python run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.001 --lrf 0.01 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json --skip-vertical-boxes" --yolo-inference="--no-slicing"
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26s --image-size 512 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 20 --lr 0.0005 --epochs 50 --num-workers 12 --kfold 1 --slice-height 160 --slice-overlap 40" --yolo-inference "--slice-height 160 --slice-overlap 40 --slice-min-visibility 0.3 --slice-max-height-px 32 --slice-nms-iou 0.3"
 
 ## resultado mAP val
 
@@ -268,7 +268,7 @@ yolo26s
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.yolo_train --project-root . --model yolo26s --image-size 640 --batch-size 8 --num-workers 8 --epochs 200
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --skip-train --yolo-model yolo26s --image-size 640 --yolo-checkpoint runs\detect\outputs\yolo_runs\clearsar_yolo26s\weights\best.pt --yolo-inference=" --no-slicing --mode 'both' "
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --skip-train --yolo-model yolo26s --image-size 640 --yolo-checkpoint outputs\clearsar_yolo26s\weights\best.pt --yolo-inference=" --no-slicing --mode 'both' "
 
 ## resultado mAP val
 
