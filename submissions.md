@@ -112,7 +112,7 @@ yolov9s 20 epocas sin kfold ni slices ni preentrenamiento
 
 ## comando
 
-/usr/bin/python run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.001 --lrf 0.01 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
+/usr/bin/python run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.001 --lrf 0.01 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json --skip-vertical-boxes" --yolo-inference="--no-slicing"
 
 ## resultado mAP val
 
