@@ -112,7 +112,7 @@ yolov9s 20 epocas sin kfold ni slices ni preentrenamiento
 
 ## comando
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 22 --lr 0.01 --lrf 0.1 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
+/usr/bin/python run_pipeline_slicing.py --yolo-model yolo26s --image-size 640 --mapping-path catalog.v1.parquet --yolo-extra-args "--batch-size 32 --lr 0.001 --lrf 0.01 --epochs 150 --num-workers 12 --kfold 1 --no-slicing --annotation-path data/annotations/instances_train_og.json" --yolo-inference="--no-slicing"
 
 ## resultado mAP val
 
@@ -258,9 +258,57 @@ curriculum learning, un primer entrenamiento con las imagenes limpias sin proble
 
 ---------------
 
+# run67
+
+ejecucion original basica sin kfold ni slicing ni nada, lo basico
+
+yolo26s
+
+## comando
+
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.yolo_train --project-root . --model yolo26s --image-size 640 --batch-size 8 --num-workers 8 --epochs 200
 
+& C:\Users\esteb\.conda\envs\clearsar\python.exe run_pipeline_slicing.py --skip-train --yolo-model yolo26s --image-size 640 --yolo-checkpoint runs\detect\outputs\yolo_runs\clearsar_yolo26s\weights\best.pt --yolo-inference=" --no-slicing --mode 'both' "
 
+## resultado mAP val
+
+0.56
+
+## resultado mAP test teórico
+
+0.55
+
+## resultado mAP leaderboard
+
+0.36
+
+## explicacion resultado
+
+overfit
+
+--------------
+
+# run68
+
+
+
+## comando
+
+
+
+## resultado mAP val
+
+
+
+## resultado mAP test teórico
+
+
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
 
 --------------
 

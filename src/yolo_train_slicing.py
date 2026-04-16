@@ -905,7 +905,7 @@ def main() -> None:
         optimizer="AdamW",
         cos_lr=True,
         warmup_epochs=3,
-        box=15.0,
+        box=7.5,
         cls=0.3,
         single_cls=True,
         amp=True,

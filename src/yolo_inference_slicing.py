@@ -42,7 +42,7 @@ from ultralytics import YOLO
 
 IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"})
 DEFAULT_CONF = 0.001
-DEFAULT_IOU = 0.6
+DEFAULT_IOU = 0.5 # 0.5 como en la competición
 DEFAULT_MAX_DET = 500
 MIN_BOX_DIM = 0.1
 
