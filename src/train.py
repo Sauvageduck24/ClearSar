@@ -39,7 +39,9 @@ def set_seed(seed: int) -> None:
 
 
 def resolve_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if not torch.cuda.is_available():
+        raise RuntimeError("No hay grafica")
+    return "cuda"
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +448,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cache", type=str, default="disk", choices=["disk", "ram", "none"],
     )
+    parser.add_argument(
+        "--run-name", type=str, default=None,
+        help="Nombre del run (ej: run1). El checkpoint se guarda como models/yolo_<run-name>.pt. "
+             "Si no se especifica, usa 'yolo_best_<model>.pt'.",
+    )
     return parser.parse_args()
 
 
@@ -511,7 +518,8 @@ def main() -> None:
         seed             = args.seed,
     )
 
-    base_run_name = f"clearsar_{model_tag}"
+    base_run_name = f"clearsar_{args.run_name}" if args.run_name else f"clearsar_{model_tag}"
+    ckpt_name     = f"yolo_{args.run_name}" if args.run_name else f"yolo_best_{model_tag}"
     yolo_runs_dir = project_root / "outputs" / "yolo_runs"
 
     # -----------------------------------------------------------------------
@@ -561,7 +569,7 @@ def main() -> None:
         print(f"[yolo] Best fold: {best['fold_idx']} (map50-95={best['metrics'].box.map:.4f})")
 
         if best["best_ckpt"].exists():
-            dest = models_dir / f"yolo_best_{model_tag}.pt"
+            dest = models_dir / f"{ckpt_name}.pt"
             shutil.copy2(best["best_ckpt"], dest)
             print(f"[yolo] Best checkpoint → {dest}")
             final_model = YOLO(str(dest))
@@ -598,7 +606,7 @@ def main() -> None:
 
         best_ckpt = yolo_runs_dir / base_run_name / "weights" / "best.pt"
         if best_ckpt.exists():
-            dest = models_dir / f"yolo_best_{model_tag}.pt"
+            dest = models_dir / f"{ckpt_name}.pt"
             shutil.copy2(best_ckpt, dest)
             print(f"[yolo] Best checkpoint → {dest}")
 

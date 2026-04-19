@@ -261,8 +261,12 @@ def _evaluate_holdout(
     device: str,
     save_viz: bool = False,
     viz_output_dir: Path | None = None,
+    images_dir_override: Path | None = None,
 ) -> dict[str, float]:
-    images_dir, labels_dir, class_names = _parse_holdout_yaml(holdout_yaml_path)
+    yaml_images_dir, labels_dir, class_names = _parse_holdout_yaml(holdout_yaml_path)
+    images_dir = images_dir_override if images_dir_override is not None else yaml_images_dir
+    if not images_dir.is_dir():
+        raise FileNotFoundError(f"Holdout images dir not found: {images_dir}")
     coco_gt, filename_to_id, image_files = _build_holdout_coco_gt(
         images_dir, labels_dir, class_names
     )
@@ -446,10 +450,18 @@ def parse_args() -> argparse.Namespace:
         "--mode", default="both", choices=["test", "holdout", "both"],
         help="holdout: evaluate metrics; test: generate submission; both: run both.",
     )
-    parser.add_argument("--mapping-path",    default="catalog.v1.parquet")
-    parser.add_argument("--test-images-dir", default="data/images/test")
-    parser.add_argument("--holdout-yaml",    default="data/yolo/holdout.yaml")
-    parser.add_argument("--output",          default="outputs/submission_yolo.zip")
+    parser.add_argument("--mapping-path",       default="catalog.v1.parquet")
+    parser.add_argument("--test-images-dir",   default="data/images/test")
+    parser.add_argument("--holdout-yaml",       default="data/yolo/holdout.yaml")
+    parser.add_argument(
+        "--holdout-images-dir", default=None,
+        help="Pre-stacked holdout images dir. Overrides the images path from --holdout-yaml. "
+             "Labels are still read from the YAML. Example: data/images/holdout_run1",
+    )
+    parser.add_argument("--run-name", default=None,
+        help="Nombre del run (ej: run1). Deriva rutas de output y viz automáticamente.")
+    parser.add_argument("--output", default=None,
+        help="Ruta de salida del zip. Por defecto: outputs/submission_<run-name>.zip")
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu",
     )
@@ -480,10 +492,17 @@ def main() -> None:
         if args.project_root
         else Path(__file__).resolve().parents[1]
     )
-    mapping_path     = _resolve(args.mapping_path,    project_root)
-    test_images_dir  = _resolve(args.test_images_dir, project_root)
-    holdout_yaml     = _resolve(args.holdout_yaml,    project_root)
-    output_path      = _resolve(args.output,          project_root)
+    run_name        = args.run_name
+    mapping_path    = _resolve(args.mapping_path,    project_root)
+    test_images_dir = _resolve(args.test_images_dir, project_root)
+    holdout_yaml    = _resolve(args.holdout_yaml,    project_root)
+
+    _output_str = args.output or (
+        f"outputs/submission_{run_name}.zip" if run_name else "outputs/submission_yolo.zip"
+    )
+    output_path = _resolve(_output_str, project_root)
+
+    holdout_images_dir = _resolve(args.holdout_images_dir, project_root) if args.holdout_images_dir else None
 
     model = YOLO(str(Path(args.checkpoint).resolve()))
 
@@ -500,14 +519,18 @@ def main() -> None:
         print("HOLDOUT EVALUATION")
         print("=" * 55)
 
-        viz_dir = project_root / "outputs" / "holdout_inference" if args.save_holdout_viz else None
+        _viz_suffix = f"holdout_inference_{run_name}" if run_name else "holdout_inference"
+        viz_dir = project_root / "outputs" / _viz_suffix if args.save_holdout_viz else None
+        if holdout_images_dir:
+            print(f"[holdout] Using pre-stacked images from: {holdout_images_dir}")
         metrics = _evaluate_holdout(
-            model             = model,
-            holdout_yaml_path = holdout_yaml,
-            imgsz             = args.image_size,
-            device            = args.device,
-            save_viz          = args.save_holdout_viz,
-            viz_output_dir    = viz_dir,
+            model                = model,
+            holdout_yaml_path    = holdout_yaml,
+            imgsz                = args.image_size,
+            device               = args.device,
+            save_viz             = args.save_holdout_viz,
+            viz_output_dir       = viz_dir,
+            images_dir_override  = holdout_images_dir,
         )
         print(
             f"[holdout] map50-95={metrics['map50_95']:.4f} | "

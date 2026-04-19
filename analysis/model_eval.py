@@ -330,5 +330,9 @@ def main(run_model=False, model_path=None):
 
 
 if __name__ == "__main__":
-    # Set run_model=True and point to your .pt file to enable Part 3
-    main(run_model=False)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default=None,
+                        help="Path to .pt checkpoint. If given, runs Part 3.")
+    args = parser.parse_args()
+    main(run_model=args.model is not None, model_path=args.model)
