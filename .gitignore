@@ -4,3 +4,5 @@
 *zip
 **/__pycache__/
 *.pyc
+analysis/README.pdf
+/analysis/outputs
