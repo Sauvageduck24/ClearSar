@@ -1,0 +1,73 @@
+# Ultralytics YOLO11 con cabeza P2 añadida para objetos muy pequeños
+# -----------------------------------------------------------------------
+# Modificación sobre yolo11.yaml estándar:
+#   - Añade cabeza P2 (stride 4, 160×160 celdas a 640px)
+#   - Detección en 4 escalas: P2, P3, P4, P5
+#   - Especialmente útil para boxes de 6-15px de altura como RFIs SAR
+#   - Coste: +~15% parámetros, +~30% memoria en inferencia
+#
+# Uso:
+#   python -m src.train --model yolo11-p2.yaml ...
+#   (Ultralytics busca el yaml en el directorio actual si no lo encuentra en su paquete)
+#
+# Para inicializar con pesos preentrenados de yolo11s:
+#   from ultralytics import YOLO
+#   model = YOLO('yolo11-p2.yaml').load('yolo11s.pt')
+# -----------------------------------------------------------------------
+
+# Parámetros globales
+nc: 1         # número de clases — RFI
+scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call yolo11.yaml with scale 'n'
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024] # summary: 181 layers, 2624080 parameters, 2624064 gradients, 6.6 GFLOPs
+  s: [0.50, 0.50, 1024] # summary: 181 layers, 9458752 parameters, 9458736 gradients, 21.7 GFLOPs
+  m: [0.50, 1.00, 512] # summary: 231 layers, 20114688 parameters, 20114672 gradients, 68.5 GFLOPs
+  l: [1.00, 1.00, 512] # summary: 357 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
+  x: [1.00, 1.50, 512] # summary: 357 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
+
+# Backbone — idéntico a yolo11.yaml
+backbone:
+  - [-1, 1, Conv,       [64, 3, 2]]        # 0  P1/2   — 320×320
+  - [-1, 1, Conv,       [128, 3, 2]]       # 1  P2/4   — 160×160
+  - [-1, 2, C3k2,       [256, False, 0.25]]# 2
+  - [-1, 1, Conv,       [256, 3, 2]]       # 3  P3/8   —  80×80
+  - [-1, 2, C3k2,       [512, False, 0.25]]# 4
+  - [-1, 1, Conv,       [512, 3, 2]]       # 5  P4/16  —  40×40
+  - [-1, 2, C3k2,       [512, True]]       # 6
+  - [-1, 1, Conv,       [1024, 3, 2]]      # 7  P5/32  —  20×20
+  - [-1, 2, C3k2,       [1024, True]]      # 8
+  - [-1, 1, SPPF,       [1024, 5]]         # 9
+  - [-1, 2, C2PSA,      [1024]]            # 10
+
+# Head con P2 añadido
+head:
+  # FPN top-down
+  - [-1,    1, nn.Upsample, [None, 2, 'nearest']]  # 11  — upsample P5→P4
+  - [[-1,6], 1, Concat,     [1]]                   # 12  — cat P5+P4
+  - [-1,    2, C3k2,        [512, False]]           # 13  — P4 features
+
+  - [-1,    1, nn.Upsample, [None, 2, 'nearest']]  # 14  — upsample P4→P3
+  - [[-1,4], 1, Concat,     [1]]                   # 15  — cat P4+P3
+  - [-1,    2, C3k2,        [256, False]]           # 16  — P3 features  (stride 8)
+
+  # ── NUEVO: bajar a P2 ──────────────────────────────────────────────
+  - [-1,    1, nn.Upsample, [None, 2, 'nearest']]  # 17  — upsample P3→P2
+  - [[-1,2], 1, Concat,     [1]]                   # 18  — cat P3+P2
+  - [-1,    2, C3k2,        [128, False]]           # 19  — P2 features  (stride 4) ← NUEVO
+  # ───────────────────────────────────────────────────────────────────
+
+  # PAN bottom-up
+  - [-1,    1, Conv,        [128, 3, 2]]            # 20  — downsample P2→P3
+  - [[-1,16],1, Concat,     [1]]                    # 21  — cat P2+P3
+  - [-1,    2, C3k2,        [256, False]]           # 22  — P3 (stride 8)
+
+  - [-1,    1, Conv,        [256, 3, 2]]            # 23  — downsample P3→P4
+  - [[-1,13],1, Concat,     [1]]                    # 24  — cat P3+P4
+  - [-1,    2, C3k2,        [512, False]]           # 25  — P4 (stride 16)
+
+  - [-1,    1, Conv,        [512, 3, 2]]            # 26  — downsample P4→P5
+  - [[-1,10],1, Concat,     [1]]                    # 27  — cat P4+P5
+  - [-1,    2, C3k2,        [1024, True]]           # 28  — P5 (stride 32)
+
+  # Detect: 4 escalas [P2, P3, P4, P5]
+  - [[19, 22, 25, 28], 1, Detect, [nc]]            # 29  — salida 4 cabezas

@@ -18,19 +18,39 @@ Usage:
 """
 
 import argparse
+import os
 import json
+import sys
 import tempfile
-import zipfile
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 import yaml
-from PIL import Image, ImageDraw
+from PIL import Image
 from tqdm import tqdm
 from ultralytics import YOLO
+
+if __package__ is None or __package__ == "":
+    project_root = Path(__file__).resolve().parents[1]
+    src_root = Path(__file__).resolve().parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+
+from src.coco_utils import _yolo_to_coco_bbox
+from src.dataset import _compute_horizontal_slices, _compute_vertical_slices
+from src.submission import (
+    _boxes_to_submission_rows,
+    _get_train_avg_boxes,
+    _load_test_id_mapping,
+    _save_submission,
+    _validate_submission,
+)
+from src.utils import _clip_xyxy, _nms_per_class, _result_to_boxes, _str2bool, _valid_bbox
+from src.vision import _save_visualization
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +60,8 @@ from ultralytics import YOLO
 IMAGE_EXTS   = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"})
 DEFAULT_CONF = 0.0
 DEFAULT_IOU  = 0.5
-DEFAULT_MAX_DET = 500
-MIN_BOX_DIM  = 0.1
+DEFAULT_MAX_DET = 300
+DEFAULT_POSTPROCESS_WORKERS = max(1, min(8, (os.cpu_count() or 1)))
 
 
 # ---------------------------------------------------------------------------
@@ -77,42 +97,177 @@ def _imgsz_for_ultralytics(imgsz: int | list[int]) -> int | list[int]:
     return int(imgsz)
 
 
-# ---------------------------------------------------------------------------
-# Box utilities
-# ---------------------------------------------------------------------------
+def _prepare_slices_for_image(
+    img_path: Path,
+    slice_height: int,
+    slice_overlap: float,
+    slice_width: int,
+    slice_width_overlap: float,
+    slice_height_overlap: float,
+) -> tuple[int, int, list[tuple[int, int]], list[np.ndarray]]:
+    """Load one image and build stretched slices for model input."""
+    with Image.open(img_path) as pil_img:
+        img = pil_img.convert("RGB")
+        orig_w, orig_h = img.size
+        windows = _compute_horizontal_slices(orig_h, slice_height, slice_overlap)
+        vertical_windows = _compute_vertical_slices(orig_w, slice_width, slice_width_overlap)
 
-def _valid_bbox(w: float, h: float) -> bool:
-    return w > MIN_BOX_DIM and h > MIN_BOX_DIM
+        stretched_slices: list[np.ndarray] = []
+        valid_windows: list[tuple[int, int]] = []
+        for y0, y1 in windows:
+            if y1 <= y0:
+                continue
+            crop = img.crop((0, y0, orig_w, y1))
+            stretched = crop.resize((orig_w, orig_h), resample=Image.BILINEAR)
+            stretched_slices.append(np.asarray(stretched))
+            valid_windows.append((y0, y1))
 
-
-def _result_to_boxes(result: Any) -> list[list[float]]:
-    """Extract boxes from a YOLO result as list of [x1, y1, x2, y2, score, cls]."""
-    if result is None or result.boxes is None:
-        return []
-    boxes = []
-    for box in result.boxes:
-        x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
-        score = float(box.conf[0].item()) if box.conf is not None else 0.0
-        cls   = int(box.cls[0].item())   if box.cls  is not None else 0
-        boxes.append([x1, y1, x2, y2, score, cls])
-    return boxes
-
-
-def _yolo_to_coco_bbox(
-    x_center: float, y_center: float,
-    width: float, height: float,
-    image_width: int, image_height: int,
-) -> list[float]:
-    w = max(0.0, width  * float(image_width))
-    h = max(0.0, height * float(image_height))
-    x = (x_center * float(image_width))  - w / 2.0
-    y = (y_center * float(image_height)) - h / 2.0
-    return [x, y, w, h]
+    return orig_w, orig_h, valid_windows, stretched_slices
 
 
-def _coco_bbox_to_xyxy(bbox: list[float]) -> tuple[float, float, float, float]:
-    x, y, w, h = bbox
-    return float(x), float(y), float(x + w), float(y + h)
+def _predict_slices_prefetch(
+    model: YOLO,
+    image_files: list[Path],
+    imgsz: int | list[int],
+    conf: float,
+    iou: float,
+    max_det: int,
+    device: str,
+    batch_size: int,
+    slice_height: int,
+    slice_overlap: float,
+    slice_width: int,
+    slice_width_overlap: float,
+    slice_height_overlap: float,
+    prefetch_workers: int = 1,
+):
+    """Yield per-image raw slice predictions with threaded CPU prefetch."""
+
+    workers = max(1, int(prefetch_workers))
+
+    def _submit_prepare(executor: ThreadPoolExecutor, path: Path):
+        return executor.submit(_prepare_slices_for_image, path, slice_height, slice_overlap, slice_width, slice_width_overlap, slice_height_overlap)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        files_iter = iter(image_files)
+        try:
+            current_path = next(files_iter)
+        except StopIteration:
+            return
+
+        pending = _submit_prepare(ex, current_path)
+        next_path: Path | None = None
+
+        while pending is not None:
+            orig_w, orig_h, valid_windows, stretched_slices = pending.result()
+
+            try:
+                next_path = next(files_iter)
+                next_pending = _submit_prepare(ex, next_path)
+            except StopIteration:
+                next_path = None
+                next_pending = None
+
+            raw_slice_preds: list[tuple[int, int, list[list[float]]]] = []
+            if stretched_slices:
+                results = model.predict(
+                    source=stretched_slices,
+                    conf=conf,
+                    iou=iou,
+                    imgsz=_imgsz_for_ultralytics(imgsz),
+                    max_det=max_det,
+                    batch=min(batch_size, len(stretched_slices)),
+                    augment=False,
+                    device=device,
+                    verbose=False,
+                )
+                for (y0, y1), result in zip(valid_windows, results):
+                    raw_slice_preds.append((y0, y1, _result_to_boxes(result)))
+
+            yield current_path, orig_w, orig_h, raw_slice_preds
+
+            current_path = next_path
+            pending = next_pending
+
+
+
+
+def _predict_slices_raw(
+    model: YOLO,
+    img_path: Path,
+    imgsz: int | list[int],
+    conf: float,
+    iou: float,
+    max_det: int,
+    device: str,
+    batch_size: int,
+    slice_height: int,
+    slice_overlap: float,
+    slice_width: int,
+    slice_width_overlap: float,
+    slice_height_overlap: float,
+) -> tuple[int, int, list[tuple[int, int, list[list[float]]]]]:
+    """Run model over stretched horizontal slices and keep raw per-slice detections."""
+    orig_w, orig_h, valid_windows, stretched_slices = _prepare_slices_for_image(
+        img_path=img_path,
+        slice_height=slice_height,
+        slice_overlap=slice_overlap,
+        slice_width=slice_width,
+        slice_width_overlap=slice_width_overlap,
+        slice_height_overlap=slice_height_overlap,
+    )
+
+    if not stretched_slices:
+        return orig_w, orig_h, []
+
+    results = model.predict(
+        source  = stretched_slices,
+        conf    = conf,
+        iou     = iou,
+        imgsz   = _imgsz_for_ultralytics(imgsz),
+        max_det = max_det,
+        batch   = min(batch_size, len(stretched_slices)),
+        augment = False,
+        device  = device,
+        verbose = False,
+    )
+
+    raw: list[tuple[int, int, list[list[float]]]] = []
+    for (y0, y1), result in zip(valid_windows, results):
+        raw.append((y0, y1, _result_to_boxes(result)))
+    return orig_w, orig_h, raw
+
+
+def _postprocess_slices_to_boxes(
+    orig_w: int,
+    orig_h: int,
+    raw_slice_preds: list[tuple[int, int, list[list[float]]]],
+    iou: float,
+) -> list[list[float]]:
+    all_boxes: list[list[float]] = []
+    for y0, y1, slice_boxes in raw_slice_preds:
+        if y1 <= y0 or not slice_boxes:
+            continue
+
+        scale_y = (y1 - y0) / max(1.0, float(orig_h))
+        for x1, y1p, x2, y2p, score, cls in slice_boxes:
+            y1_orig = float(y0) + float(y1p) * scale_y
+            y2_orig = float(y0) + float(y2p) * scale_y
+            x1c, y1c, x2c, y2c = _clip_xyxy(
+                float(x1), y1_orig, float(x2), y2_orig, orig_w, orig_h
+            )
+            if x2c <= x1c or y2c <= y1c:
+                continue
+            all_boxes.append([x1c, y1c, x2c, y2c, float(score), int(cls)])
+
+    return _nms_per_class(all_boxes, iou_thr=iou)
+
+
+def _postprocess_slices_worker(
+    task: tuple[int, int, list[tuple[int, int, list[list[float]]]], float],
+) -> list[list[float]]:
+    orig_w, orig_h, raw_slice_preds, iou = task
+    return _postprocess_slices_to_boxes(orig_w, orig_h, raw_slice_preds, iou)
 
 
 # ---------------------------------------------------------------------------
@@ -127,18 +282,46 @@ def _predict(
     iou: float,
     max_det: int,
     device: str,
+    batch_size: int = 1,
+    slicing: bool = False,
+    slice_height: int = 256,
+    slice_overlap: float = 0.2,
+    slice_width: int = 256,
+    slice_width_overlap: float = 0.2,
+    slice_height_overlap: float = 0.2,
 ) -> list[list[float]]:
-    results = model.predict(
-        source  = str(img_path),
-        conf    = conf,
-        iou     = iou,
-        imgsz   = _imgsz_for_ultralytics(imgsz),
-        max_det = max_det,
-        augment = False,
-        device  = device,
-        verbose = False,
+    batch_size = max(1, int(batch_size))
+
+    if not slicing:
+        results = model.predict(
+            source  = str(img_path),
+            conf    = conf,
+            iou     = iou,
+            imgsz   = _imgsz_for_ultralytics(imgsz),
+            max_det = max_det,
+            batch   = batch_size,
+            augment = False,
+            device  = device,
+            verbose = False,
+        )
+        return _result_to_boxes(results[0] if results else None)
+
+    orig_w, orig_h, raw_slice_preds = _predict_slices_raw(
+        model=model,
+        img_path=img_path,
+        imgsz=imgsz,
+        conf=conf,
+        iou=iou,
+        max_det=max_det,
+        device=device,
+        batch_size=batch_size,
+        slice_height=slice_height,
+        slice_overlap=slice_overlap,
+        slice_width=slice_width,
+        slice_width_overlap=slice_width_overlap,
+        slice_height_overlap=slice_height_overlap,
     )
-    return _result_to_boxes(results[0] if results else None)
+    return _postprocess_slices_to_boxes(orig_w, orig_h, raw_slice_preds, iou=iou)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +425,7 @@ def _compute_coco_metrics(
         coco_gt_api = COCO(str(gt_json))
         coco_dt_api = coco_gt_api.loadRes(str(pred_json))
         evaluator   = COCOeval(coco_gt_api, coco_dt_api, iouType="bbox")
+        evaluator.params.maxDets = [1, 10, 100, DEFAULT_MAX_DET]
         evaluator.evaluate()
         evaluator.accumulate()
         evaluator.summarize()
@@ -259,6 +443,15 @@ def _evaluate_holdout(
     holdout_yaml_path: Path,
     imgsz: int | list[int],
     device: str,
+    batch_size: int = 1,
+    postprocess_workers: int = DEFAULT_POSTPROCESS_WORKERS,
+    slicing: bool = False,
+    slice_height: int = 256,
+    slice_overlap: float = 0.2,
+    slice_width: int = 256,
+    slice_width_overlap: float = 0.2,
+    slice_height_overlap: float = 0.2,
+    prefetch_workers: int = 1,
     save_viz: bool = False,
     viz_output_dir: Path | None = None,
 ) -> dict[str, float]:
@@ -276,162 +469,109 @@ def _evaluate_holdout(
             annotations_by_image.setdefault(int(ann["image_id"]), []).append(ann)
 
     coco_preds: list[dict] = []
-    for img_path in tqdm(image_files, desc="Holdout inference"):
-        image_id = filename_to_id[img_path.name]
-        boxes = _predict(model, img_path, imgsz, DEFAULT_CONF, DEFAULT_IOU, DEFAULT_MAX_DET, device)
+    if slicing:
+        pred_jobs: list[tuple[int, Path, int, int, list[tuple[int, int, list[list[float]]]]]] = []
+        for img_path, orig_w, orig_h, raw_slice_preds in tqdm(
+            _predict_slices_prefetch(
+                model=model,
+                image_files=image_files,
+                imgsz=imgsz,
+                conf=DEFAULT_CONF,
+                iou=DEFAULT_IOU,
+                max_det=DEFAULT_MAX_DET,
+                device=device,
+                batch_size=batch_size,
+                slice_height=slice_height,
+                slice_overlap=slice_overlap,
+                slice_width=slice_width,
+                slice_width_overlap=slice_width_overlap,
+                slice_height_overlap=slice_height_overlap,
+                prefetch_workers=prefetch_workers,
+            ),
+            total=len(image_files),
+            desc="Holdout slice prediction",
+        ):
+            image_id = filename_to_id[img_path.name]
+            pred_jobs.append((image_id, img_path, orig_w, orig_h, raw_slice_preds))
 
-        for x1, y1, x2, y2, score, cls in boxes:
-            w = max(0.0, x2 - x1)
-            h = max(0.0, y2 - y1)
-            if not _valid_bbox(w, h):
-                continue
-            coco_preds.append({
-                "image_id":   image_id,
-                "category_id": int(cls) + 1,
-                "bbox":  [float(x1), float(y1), w, h],
-                "score": float(score),
-            })
+        boxes_by_image_id: dict[int, list[list[float]]] = {}
+        tasks = [
+            (orig_w, orig_h, raw_slice_preds, DEFAULT_IOU)
+            for _image_id, _img_path, orig_w, orig_h, raw_slice_preds in pred_jobs
+        ]
+        with ProcessPoolExecutor(max_workers=max(1, int(postprocess_workers))) as ex:
+            fut_to_image_id = {
+                ex.submit(_postprocess_slices_worker, task): pred_jobs[idx][0]
+                for idx, task in enumerate(tasks)
+            }
+            for fut in tqdm(as_completed(fut_to_image_id), total=len(fut_to_image_id), desc="Holdout postprocess"):
+                image_id = fut_to_image_id[fut]
+                boxes_by_image_id[image_id] = fut.result()
 
-        if save_viz:
-            _save_visualization(
-                img_path    = img_path,
-                output_dir  = viz_output_dir,
-                gt_boxes    = annotations_by_image.get(image_id, []),
-                pred_boxes  = boxes,
-                class_names = class_names,
+        for image_id, img_path, _orig_w, _orig_h, _raw in pred_jobs:
+            boxes = boxes_by_image_id.get(image_id, [])
+            for x1, y1, x2, y2, score, cls in boxes:
+                w = max(0.0, x2 - x1)
+                h = max(0.0, y2 - y1)
+                if not _valid_bbox(w, h):
+                    continue
+                coco_preds.append({
+                    "image_id":   image_id,
+                    "category_id": int(cls) + 1,
+                    "bbox":  [float(x1), float(y1), w, h],
+                    "score": float(score),
+                })
+
+            if save_viz:
+                _save_visualization(
+                    img_path    = img_path,
+                    output_dir  = viz_output_dir,
+                    gt_boxes    = annotations_by_image.get(image_id, []),
+                    pred_boxes  = boxes,
+                    class_names = class_names,
+                )
+    else:
+        for img_path in tqdm(image_files, desc="Holdout inference"):
+            image_id = filename_to_id[img_path.name]
+            boxes = _predict(
+                model,
+                img_path,
+                imgsz,
+                DEFAULT_CONF,
+                DEFAULT_IOU,
+                DEFAULT_MAX_DET,
+                device,
+                batch_size=batch_size,
+                slicing=False,
+                slice_height=slice_height,
+                slice_overlap=slice_overlap,
             )
+
+            for x1, y1, x2, y2, score, cls in boxes:
+                w = max(0.0, x2 - x1)
+                h = max(0.0, y2 - y1)
+                if not _valid_bbox(w, h):
+                    continue
+                coco_preds.append({
+                    "image_id":   image_id,
+                    "category_id": int(cls) + 1,
+                    "bbox":  [float(x1), float(y1), w, h],
+                    "score": float(score),
+                })
+
+            if save_viz:
+                _save_visualization(
+                    img_path    = img_path,
+                    output_dir  = viz_output_dir,
+                    gt_boxes    = annotations_by_image.get(image_id, []),
+                    pred_boxes  = boxes,
+                    class_names = class_names,
+                )
 
     vertical = sum(1 for r in coco_preds if r["bbox"][3] > r["bbox"][2])
     print(f"[holdout] Vertical boxes: {vertical} of {len(coco_preds)}")
 
     return _compute_coco_metrics(coco_gt, coco_preds)
-
-
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
-def _draw_labeled_box(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[float, float, float, float],
-    label: str,
-    color: tuple[int, int, int],
-) -> None:
-    x1, y1, x2, y2 = box
-    draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
-    if not label:
-        return
-    try:
-        tb = draw.textbbox((0, 0), label)
-        tw, th = tb[2] - tb[0], tb[3] - tb[1]
-    except Exception:
-        tw, th = max(1, len(label) * 6), 11
-    pad = 4
-    top = max(0, y1 - (th + pad * 2))
-    draw.rectangle([x1, top, x1 + tw + pad * 2, top + th + pad * 2], fill=color)
-    draw.text((x1 + pad, top + pad), label, fill=(255, 255, 255))
-
-
-def _save_visualization(
-    img_path: Path,
-    output_dir: Path,
-    gt_boxes: list[dict],
-    pred_boxes: list[list[float]],
-    class_names: list[str],
-) -> None:
-    with Image.open(img_path) as img:
-        canvas = img.convert("RGB")
-    draw = ImageDraw.Draw(canvas)
-
-    for ann in gt_boxes:
-        bbox = _coco_bbox_to_xyxy(ann["bbox"])
-        cls  = int(ann.get("category_id", 1)) - 1
-        name = class_names[cls] if 0 <= cls < len(class_names) else str(cls)
-        _draw_labeled_box(draw, bbox, f"GT {name}", (46, 160, 67))
-
-    for pred in pred_boxes:
-        x1, y1, x2, y2, score, cls_id = pred
-        w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
-        if not _valid_bbox(w, h):
-            continue
-        name = class_names[int(cls_id)] if 0 <= int(cls_id) < len(class_names) else str(int(cls_id))
-        _draw_labeled_box(draw, (x1, y1, x2, y2), f"PR {name} {score:.2f}", (214, 48, 49))
-
-    canvas.save(output_dir / f"{img_path.stem}.png")
-
-
-# ---------------------------------------------------------------------------
-# Submission utilities
-# ---------------------------------------------------------------------------
-
-def _get_train_avg_boxes(json_path: Path) -> float:
-    if not json_path.exists():
-        return 0.0
-    data = json.loads(json_path.read_text(encoding="utf-8"))
-    n_imgs = len(data.get("images", []))
-    return len(data.get("annotations", [])) / n_imgs if n_imgs else 0.0
-
-
-def _load_test_id_mapping(test_images_dir: Path, mapping_path: Path) -> dict[str, int]:
-    if not mapping_path.exists():
-        raise FileNotFoundError(f"Mapping file not found: {mapping_path}")
-    df = pd.read_parquet(mapping_path)
-    if "id" not in df.columns:
-        raise ValueError(f"Parquet missing 'id' column: {mapping_path}")
-    mapping = {
-        Path(norm).name: int(Path(norm).stem)
-        for item_id in df["id"].astype(str)
-        if "/images/test/" in (norm := item_id.replace("\\", "/"))
-        and Path(norm).stem.isdigit()
-    }
-    missing = [
-        p.name for p in sorted(test_images_dir.iterdir())
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and p.name not in mapping
-    ]
-    if missing:
-        raise ValueError(
-            f"Missing IDs for test images in mapping. Examples: {', '.join(missing[:5])}"
-        )
-    return mapping
-
-
-def _boxes_to_submission_rows(
-    boxes: list[list[float]],
-    image_id: int,
-) -> list[dict[str, Any]]:
-    rows = []
-    for x1, y1, x2, y2, score, cls in boxes:
-        w = max(0.0, float(x2) - float(x1))
-        h = max(0.0, float(y2) - float(y1))
-        if not _valid_bbox(w, h):
-            continue
-        rows.append({
-            "image_id":    image_id,
-            "category_id": int(cls) + 1,
-            "bbox":  [float(x1), float(y1), w, h],
-            "score": float(score),
-        })
-    return rows
-
-
-def _validate_submission(rows: list[dict]) -> None:
-    for i, row in enumerate(rows):
-        for key in ("image_id", "category_id", "bbox", "score"):
-            if key not in row:
-                raise ValueError(f"Row {i} missing required key '{key}'")
-        if not isinstance(row["bbox"], list) or len(row["bbox"]) != 4:
-            raise ValueError(f"Row {i} has invalid bbox: {row['bbox']}")
-
-
-def _save_submission(rows: list[dict], output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(rows)
-    if output_path.suffix.lower() == ".json":
-        output_path.write_text(payload, encoding="utf-8")
-        return
-    zip_path = output_path if output_path.suffix.lower() == ".zip" else output_path.with_suffix(".zip")
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("submission.json", payload)
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +596,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-size", type=_parse_image_size, default=640,
         help="Detector input size. Examples: 640 or [512,1024].",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=16,
+        help="Batch size for prediction (especially useful with slicing).",
+    )
+    parser.add_argument(
+        "--postprocess-workers", type=int, default=DEFAULT_POSTPROCESS_WORKERS,
+        help="Number of worker processes for CPU postprocessing in slicing mode.",
+    )
+    parser.add_argument(
+        "--prefetch-workers", type=int, default=1,
+        help="Number of threads to prefetch image loading/resize while GPU infers (slicing mode).",
+    )
+    parser.add_argument(
+        "--slicing", type=_str2bool, default=False,
+        help="If true, use horizontal slicing + stretch-back pipeline before prediction.",
+    )
+    parser.add_argument(
+        "--slice-height", type=int, default=256,
+        help="Slice height in pixels for horizontal slicing.",
+    )
+    parser.add_argument(
+        "--slice-overlap", type=float, default=0.2,
+        help="Fractional overlap between consecutive slices (0.0 to <1.0).",
+    )
+    parser.add_argument(
+        "--slice-width", type=int, default=256,
+        help="Slice width in pixels for vertical slicing.",
+    )
+    parser.add_argument(
+        "--slice-width-overlap", type=float, default=0.2,
+        help="Fractional overlap between consecutive vertical slices (0.0 to <1.0).",
+    )
+    parser.add_argument(
+        "--slice-height-overlap", type=float, default=0.2,
+        help="Fractional overlap between consecutive horizontal slices (0.0 to <1.0).",
     )
     parser.add_argument(
         "--save-holdout-viz", action="store_true",
@@ -489,7 +665,9 @@ def main() -> None:
 
     print(
         f"[inference] imgsz={args.image_size} | conf={DEFAULT_CONF} | "
-        f"iou={DEFAULT_IOU} | max_det={DEFAULT_MAX_DET} | device={args.device}"
+        f"iou={DEFAULT_IOU} | max_det={DEFAULT_MAX_DET} | device={args.device} | "
+        f"batch={args.batch_size} | pp_workers={args.postprocess_workers} | slicing={args.slicing} | "
+        f"slice_h={args.slice_height} | slice_ov={args.slice_overlap} | slice_w={args.slice_width} | slice_w_ov={args.slice_width_overlap} | slice_h_ov={args.slice_height_overlap}"
     )
 
     # -----------------------------------------------------------------------
@@ -506,6 +684,15 @@ def main() -> None:
             holdout_yaml_path = holdout_yaml,
             imgsz             = args.image_size,
             device            = args.device,
+            batch_size        = args.batch_size,
+            postprocess_workers = args.postprocess_workers,
+            slicing           = args.slicing,
+            slice_height      = args.slice_height,
+            slice_overlap     = args.slice_overlap,
+            slice_width       = args.slice_width,
+            slice_width_overlap = args.slice_width_overlap,
+            slice_height_overlap = args.slice_height_overlap,
+            prefetch_workers  = args.prefetch_workers,
             save_viz          = args.save_holdout_viz,
             viz_output_dir    = viz_dir,
         )
@@ -539,12 +726,65 @@ def main() -> None:
     ]
 
     submission_rows = []
-    for img_path in tqdm(image_files, desc="Test inference"):
-        if img_path.name not in filename_to_id:
-            continue
-        image_id = int(filename_to_id[img_path.name])
-        boxes    = _predict(model, img_path, args.image_size, DEFAULT_CONF, DEFAULT_IOU, DEFAULT_MAX_DET, args.device)
-        submission_rows.extend(_boxes_to_submission_rows(boxes, image_id))
+    if args.slicing:
+        pred_jobs: list[tuple[int, int, int, list[tuple[int, int, list[list[float]]]]]] = []
+        for img_path, orig_w, orig_h, raw_slice_preds in tqdm(
+            _predict_slices_prefetch(
+                model=model,
+                image_files=image_files,
+                imgsz=args.image_size,
+                conf=DEFAULT_CONF,
+                iou=DEFAULT_IOU,
+                max_det=DEFAULT_MAX_DET,
+                device=args.device,
+                batch_size=args.batch_size,
+                slice_height=args.slice_height,
+                slice_overlap=args.slice_overlap,
+                slice_width=args.slice_width,
+                slice_width_overlap=args.slice_width_overlap,
+                slice_height_overlap=args.slice_height_overlap,
+                prefetch_workers=args.prefetch_workers,
+            ),
+            total=len(image_files),
+            desc="Test slice prediction",
+        ):
+            if img_path.name not in filename_to_id:
+                continue
+            image_id = int(filename_to_id[img_path.name])
+            pred_jobs.append((image_id, orig_w, orig_h, raw_slice_preds))
+
+        tasks = [
+            (orig_w, orig_h, raw_slice_preds, DEFAULT_IOU)
+            for _image_id, orig_w, orig_h, raw_slice_preds in pred_jobs
+        ]
+        with ProcessPoolExecutor(max_workers=max(1, int(args.postprocess_workers))) as ex:
+            fut_to_image_id = {
+                ex.submit(_postprocess_slices_worker, task): pred_jobs[idx][0]
+                for idx, task in enumerate(tasks)
+            }
+            for fut in tqdm(as_completed(fut_to_image_id), total=len(fut_to_image_id), desc="Test postprocess"):
+                image_id = fut_to_image_id[fut]
+                boxes = fut.result()
+                submission_rows.extend(_boxes_to_submission_rows(boxes, image_id))
+    else:
+        for img_path in tqdm(image_files, desc="Test inference"):
+            if img_path.name not in filename_to_id:
+                continue
+            image_id = int(filename_to_id[img_path.name])
+            boxes    = _predict(
+                model,
+                img_path,
+                args.image_size,
+                DEFAULT_CONF,
+                DEFAULT_IOU,
+                DEFAULT_MAX_DET,
+                args.device,
+                batch_size=args.batch_size,
+                slicing=False,
+                slice_height=args.slice_height,
+                slice_overlap=args.slice_overlap,
+            )
+            submission_rows.extend(_boxes_to_submission_rows(boxes, image_id))
 
     avg_test = len(submission_rows) / len(image_files) if image_files else 0.0
     print(f"\n{'=' * 55}")
