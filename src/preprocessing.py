@@ -209,6 +209,72 @@ def _resize_image_to_square(img: np.ndarray, image_size: int) -> np.ndarray:
     return img
 
 
+def _scale_dimensions_with_y_multiplier(
+    width: int,
+    height: int,
+    y_component_multiplier: float,
+) -> tuple[int, int]:
+    """Escala solo la dimension Y manteniendo X inalterada."""
+    multiplier = float(y_component_multiplier)
+    if multiplier <= 0:
+        raise ValueError("y_component_multiplier must be > 0")
+
+    return max(1, int(round(width))), max(1, int(round(height * multiplier)))
+
+
+def _compute_letterbox_params(
+    src_w: int,
+    src_h: int,
+    dst_w: int,
+    dst_h: int,
+) -> tuple[float, int, int, int, int]:
+    """Calcula escala y padding para letterbox centrado."""
+    src_w = max(1, int(src_w))
+    src_h = max(1, int(src_h))
+    dst_w = max(1, int(dst_w))
+    dst_h = max(1, int(dst_h))
+
+    scale = min(dst_w / float(src_w), dst_h / float(src_h))
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    pad_x = max(0, (dst_w - new_w) // 2)
+    pad_y = max(0, (dst_h - new_h) // 2)
+    return scale, new_w, new_h, pad_x, pad_y
+
+
+def _resize_image_with_letterbox(
+    img: np.ndarray,
+    out_w: int,
+    out_h: int,
+    pad_value: int = 0,
+) -> np.ndarray:
+    """Resize con aspecto preservado y padding centrado (letterbox)."""
+    if out_w <= 0 or out_h <= 0:
+        return img
+    if img is None or img.size == 0 or img.ndim < 2:
+        return img
+
+    src_h, src_w = int(img.shape[0]), int(img.shape[1])
+    _scale, new_w, new_h, pad_x, pad_y = _compute_letterbox_params(src_w, src_h, out_w, out_h)
+
+    if img.ndim == 2:
+        canvas = np.full((int(out_h), int(out_w)), pad_value, dtype=img.dtype)
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+        return canvas
+
+    if img.ndim == 3:
+        channels = int(img.shape[2])
+        canvas = np.full((int(out_h), int(out_w), channels), pad_value, dtype=img.dtype)
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        if resized.ndim == 2 and channels == 1:
+            resized = resized[:, :, None]
+        canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w, ...] = resized
+        return canvas
+
+    return img
+
+
 def _resize_image_to_shape(img: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     """Resize a (out_w, out_h) conservando numero de canales/dtype."""
     if out_w <= 0 or out_h <= 0:

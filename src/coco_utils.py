@@ -6,7 +6,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .preprocessing import _load_image_gray, _load_image_raw, _save_image_raw, _to_gray
+from .preprocessing import (
+    _load_image_gray,
+    _load_image_raw,
+    _save_image_raw,
+    _to_gray,
+)
 from .utils import _progress_iter
 
 
@@ -331,6 +336,8 @@ def _convert_coco_to_yolo(
     copy_paste_n: int = 3,
     merge_contiguous_boxes: bool = False,
     resized_image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
@@ -396,12 +403,17 @@ def _convert_coco_to_yolo(
                 out_stem = Path(out_name).stem
                 label_path = output_labels_dir / f"{out_stem}.txt"
 
-                out_img_w, out_img_h = img_w, img_h
-                if resized_image_size is not None:
-                    out_img_w = float(resized_image_size)
-                    out_img_h = float(resized_image_size)
-                    if out_img_w <= 0 or out_img_h <= 0:
-                        raise ValueError("resized_image_size must be > 0")
+                if resized_image_size is not None and resized_image_size <= 0:
+                    raise ValueError("resized_image_size must be > 0")
+
+                # apply_letterboxing=True: images are saved at original aspect ratio;
+                # YOLO letterboxes internally, so labels stay normalized by original dims.
+                # apply_letterboxing=False: images are stretched to a square of
+                # resized_image_size x resized_image_size, so labels scale accordingly.
+                if apply_letterboxing or resized_image_size is None:
+                    out_img_w, out_img_h = img_w, img_h
+                else:
+                    out_img_w = out_img_h = float(resized_image_size)
 
                 img_gray = None
                 img_raw = None
@@ -446,9 +458,9 @@ def _convert_coco_to_yolo(
                     else:
                         x_t, y_t, w_t, h_t = x, y, w, h
 
-                    if resized_image_size is not None:
-                        sx = out_img_w / max(1e-6, img_w)
-                        sy = out_img_h / max(1e-6, img_h)
+                    if resized_image_size is not None and not apply_letterboxing:
+                        sx = float(resized_image_size) / max(1e-6, img_w)
+                        sy = float(resized_image_size) / max(1e-6, img_h)
                         x_t *= sx
                         y_t *= sy
                         w_t *= sx
@@ -471,11 +483,19 @@ def _convert_coco_to_yolo(
                     and copy_paste_p > 0
                     and boxes_to_use
                 ):
+                    # copy_paste_max_h is specified in original COCO pixel space, but
+                    # boxes_to_use are already scaled to the resized image space.
+                    # Scale the threshold to match so the pool filter works correctly.
+                    if resized_image_size is not None and not apply_letterboxing:
+                        _cp_sy = float(resized_image_size) / max(1e-6, img_h)
+                        _effective_max_h = copy_paste_max_h * _cp_sy
+                    else:
+                        _effective_max_h = copy_paste_max_h
                     img_aug, boxes_aug, added = _apply_small_box_copy_paste(
                         img_raw,
                         boxes_to_use,
                         copy_paste_p=copy_paste_p,
-                        copy_paste_max_h=copy_paste_max_h,
+                        copy_paste_max_h=_effective_max_h,
                         copy_paste_n=copy_paste_n,
                         max_overlap=0.3,
                     )

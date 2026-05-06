@@ -1,3 +1,7 @@
+# ---------------------------------------------------------------------------
+# Training config
+# ---------------------------------------------------------------------------
+
 from __future__ import annotations
 
 """
@@ -25,7 +29,17 @@ from .utils import _str2bool, resolve_device, set_seed
 # Training config
 # ---------------------------------------------------------------------------
 
-def _base_train_kwargs(args: argparse.Namespace, yaml_path: Path, run_name: str) -> dict:
+
+def _resolve_imgsz(args: argparse.Namespace) -> int:
+    return int(args.image_size)
+
+def _base_train_kwargs(
+    args: argparse.Namespace,
+    yaml_path: Path,
+    run_name: str,
+    epochs: Optional[int] = None,
+) -> dict:
+    train_epochs = int(args.epochs if epochs is None else epochs)
     yolo_runs_dir = (
         Path(args.project_root).resolve() / "outputs" / "yolo_runs"
         if args.project_root
@@ -34,8 +48,8 @@ def _base_train_kwargs(args: argparse.Namespace, yaml_path: Path, run_name: str)
 
     kwargs = dict(
         data=str(yaml_path),
-        epochs=args.epochs,
-        imgsz=args.image_size,
+        imgsz=_resolve_imgsz(args),
+        epochs=train_epochs,
         batch=args.batch_size,
         workers=args.num_workers,
         lr0=args.lr,
@@ -49,38 +63,105 @@ def _base_train_kwargs(args: argparse.Namespace, yaml_path: Path, run_name: str)
         plots=True,
         val=True,
         cache=args.cache if args.cache != "none" else False,
-        scale=0.2,
+        scale=args.scale,
         degrees=0.0,
         fliplr=0.5,
         shear=0.0,
-        translate=0.05,
-        flipud=0.5,
+        translate=args.translate,
+        flipud=0.0,
         hsv_h=0.01,
         hsv_s=0.3,
-        hsv_v=0.5,
+        hsv_v=0.2,
         mosaic=args.mosaic,
-        close_mosaic=20,
+        close_mosaic=args.close_mosaic if args.close_mosaic is not None else max(10, round(train_epochs * 0.4)),
         perspective=0.0,
         copy_paste=0.0 if args.small_box_copy_paste else args.copy_paste_p,
         mixup=0.0,
         erasing=0.0,
         optimizer="AdamW",
         cos_lr=True,
-        warmup_epochs=3,
-        weight_decay=5e-4,
+        warmup_momentum=0.8,
+        warmup_bias_lr=0.1,
+        warmup_epochs=5,
+        weight_decay=1e-3,
         box=args.box,
         cls=args.cls,
         dfl=args.dfl,
         label_smoothing=args.label_smoothing,
         amp=True,
         augment=True,
+        multi_scale=args.multi_scale,
         verbose=True,
+        single_cls=True,
     )
 
     device = args.device or resolve_device()
     kwargs["device"] = device
 
     return kwargs, yolo_runs_dir
+
+
+def _infer_backbone_freeze_layers(model) -> int:
+    yolo_model = getattr(model, "model", None)
+    yaml_cfg = getattr(yolo_model, "yaml", None)
+    if isinstance(yaml_cfg, dict):
+        backbone = yaml_cfg.get("backbone")
+        if isinstance(backbone, list) and backbone:
+            return len(backbone)
+
+    return 10
+
+
+def _train_with_optional_backbone_freeze(
+    model,
+    args: argparse.Namespace,
+    yaml_path: Path,
+    run_name: str,
+):
+    from ultralytics import YOLO
+
+    yolo_runs_dir = (
+        Path(args.project_root).resolve() / "outputs" / "yolo_runs"
+        if args.project_root
+        else Path(__file__).resolve().parents[1] / "outputs" / "yolo_runs"
+    )
+
+    if not args.freeze_backbone:
+        kwargs, _ = _base_train_kwargs(args, yaml_path, run_name)
+        model.train(**kwargs)
+        return model, run_name
+
+    freeze_fraction = float(args.freeze_backbone_fraction)
+    if not 0.0 < freeze_fraction <= 1.0:
+        raise ValueError("--freeze-backbone-fraction must be in the range (0, 1]")
+
+    freeze_epochs = max(1, int(round(args.epochs * freeze_fraction)))
+    freeze_epochs = min(freeze_epochs, args.epochs)
+    freeze_layers = _infer_backbone_freeze_layers(model)
+
+    freeze_run_name = f"{run_name}_freeze"
+    print(
+        f"[yolo] Freeze backbone activo: "
+        f"{freeze_epochs}/{args.epochs} epocas con freeze={freeze_layers} capas"
+    )
+
+    freeze_kwargs, _ = _base_train_kwargs(args, yaml_path, freeze_run_name, epochs=freeze_epochs)
+    freeze_kwargs["freeze"] = freeze_layers
+    model.train(**freeze_kwargs)
+
+    freeze_best_ckpt = yolo_runs_dir / freeze_run_name / "weights" / "best.pt"
+    if freeze_epochs >= args.epochs:
+        print("[yolo] Freeze-backbone cubre todas las epocas; no se ejecuta la fase unfreeze.")
+        return (YOLO(str(freeze_best_ckpt)), freeze_run_name) if freeze_best_ckpt.exists() else (model, freeze_run_name)
+
+    finetune_epochs = args.epochs - freeze_epochs
+    finetune_run_name = f"{run_name}_finetune"
+    print(f"[yolo] Unfreeze backbone: {finetune_epochs}/{args.epochs} epocas restantes")
+
+    finetune_model = YOLO(str(freeze_best_ckpt)) if freeze_best_ckpt.exists() else model
+    finetune_kwargs, _ = _base_train_kwargs(args, yaml_path, finetune_run_name, epochs=finetune_epochs)
+    finetune_model.train(**finetune_kwargs)
+    return finetune_model, finetune_run_name
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +196,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--image-size", type=int, default=960)
     parser.add_argument(
+        "--y-component-multiplier",
+        type=float,
+        default=1.0,
+        help=(
+            "Escala la componente Y al redimensionar la imagen. "
+            "Ejemplo: 2.0 convierte (x, y) en (x, 2y)."
+        ),
+    )
+    parser.add_argument(
+        "--apply-letterboxing",
+        type=_str2bool,
+        default=False,
+        help=(
+            "Si true, aplica letterbox en el ultimo resize a image-size, "
+            "despues de estirar con y-component-multiplier."
+        ),
+    )
+    parser.add_argument(
+        "--debug-transform",
+        type=_str2bool,
+        default=False,
+        help=(
+            "Si true, imprime la transformacion de una sola imagen "
+            "y fuerza el preprocesado a un worker para que la traza sea unica."
+        ),
+    )
+    parser.add_argument(
         "--slicing",
         type=_str2bool,
         default=False,
@@ -147,7 +255,46 @@ def parse_args() -> argparse.Namespace:
         default=0.2,
         help="Solape fraccional entre slices horizontales consecutivos (0.0 a <1.0).",
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=0.05,
+        help=(
+            "Rango de escala para augmentacion de zoom (0.0=sin zoom). "
+            "Default 0.05 (antes hardcoded 0.2). "
+            "Reducirlo mejora la precision de localizacion en cajas finas."
+        ),
+    )
+    parser.add_argument(
+        "--translate",
+        type=float,
+        default=0.02,
+        help=(
+            "Fraccion maxima de desplazamiento de imagen (0.0=sin traslacion). "
+            "Default 0.02 (antes hardcoded 0.05). "
+            "Reducirlo mejora la precision del y-center en cajas finas."
+        ),
+    )
     parser.add_argument("--mosaic", type=float, default=1.0)
+    parser.add_argument(
+        "--close-mosaic",
+        type=int,
+        default=None,
+        help=(
+            "Numero de epocas finales sin mosaic. "
+            "Si None, usa el 40%% del total de epocas (antes era 20%%). "
+            "Mas epocas sin mosaic = mas tiempo para ajustar localizacion con LR decente."
+        ),
+    )
+    parser.add_argument(
+        "--multi-scale",
+        type=_str2bool,
+        default=False,
+        help=(
+            "Si true, activa entrenamiento multi-scale de Ultralytics, "
+            "variando aleatoriamente el tamano de entrada por batch."
+        ),
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
         "--prep-workers",
@@ -167,6 +314,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument(
+        "--freeze-backbone",
+        type=_str2bool,
+        default=False,
+        help=(
+            "Si true, congela el backbone al principio del entrenamiento y luego "
+            "lo descongela para afinar todo el modelo."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-backbone-fraction",
+        type=float,
+        default=0.3,
+        help=(
+            "Porcentaje del total de epocas que se entrena con backbone congelado. "
+            "0.3 equivale a 30%%."
+        ),
+    )
     parser.add_argument(
         "--device",
         type=str,
@@ -234,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--label-smoothing",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Valor de label smoothing para la perdida de clasificacion.",
     )
     parser.add_argument(
@@ -331,6 +496,12 @@ def main() -> None:
 
     if args.kfold < 1:
         raise ValueError("--kfold must be >= 1")
+    if args.y_component_multiplier <= 0:
+        raise ValueError("--y-component-multiplier must be > 0")
+    if args.freeze_backbone and not 0.0 < args.freeze_backbone_fraction <= 1.0:
+        raise ValueError("--freeze-backbone-fraction must be in the range (0, 1]")
+    if args.debug_transform and args.prep_workers != 1:
+        print("[yolo][debug] debug-transform activo: prep-workers se forzara a 1")
 
     set_seed(args.seed)
 
@@ -396,11 +567,14 @@ def main() -> None:
         std_multi_norm=args.std_multi_norm,
         image_size=args.image_size,
         slicing=args.slicing,
+        y_component_multiplier=args.y_component_multiplier,
+        apply_letterboxing=args.apply_letterboxing,
         slice_height=args.slice_height,
         slice_width=args.slice_width,
         slice_width_overlap=args.slice_width_overlap,
         slice_height_overlap=args.slice_height_overlap,
         prep_workers=args.prep_workers,
+        debug_transform=args.debug_transform,
     )
 
     base_run_name = f"clearsar_{model_tag}"
@@ -431,22 +605,29 @@ def main() -> None:
             hard_negative_mining=args.hard_negative_mining,
             image_size=args.image_size,
             slicing=args.slicing,
+            y_component_multiplier=args.y_component_multiplier,
+            apply_letterboxing=args.apply_letterboxing,
             slice_height=args.slice_height,
             slice_width=args.slice_width,
             slice_width_overlap=args.slice_width_overlap,
             slice_height_overlap=args.slice_height_overlap,
             prep_workers=args.prep_workers,
+            debug_transform=args.debug_transform,
         )
 
         fold_results = []
         for fold_idx, fold_yaml in fold_specs:
             fold_run_name = f"{base_run_name}_fold{fold_idx:02d}"
             fold_model = _make_model()
-            kwargs, _ = _base_train_kwargs(args, fold_yaml, fold_run_name)
             print(f"\n[yolo] ===== Fold {fold_idx}/{args.kfold} =====")
-            fold_model.train(**kwargs)
+            fold_model, fold_train_run_name = _train_with_optional_backbone_freeze(
+                fold_model,
+                args,
+                fold_yaml,
+                fold_run_name,
+            )
 
-            metrics = fold_model.val(data=str(fold_yaml), split="val", plots=False)
+            metrics = fold_model.val(data=str(fold_yaml), split="val", plots=False, imgsz=_resolve_imgsz(args))
             print(
                 f"[yolo] fold {fold_idx} | "
                 f"map50-95={metrics.box.map:.4f}  map50={metrics.box.map50:.4f}  map75={metrics.box.map75:.4f}"
@@ -455,7 +636,7 @@ def main() -> None:
                 {
                     "fold_idx": fold_idx,
                     "metrics": metrics,
-                    "best_ckpt": yolo_runs_dir / fold_run_name / "weights" / "best.pt",
+                    "best_ckpt": yolo_runs_dir / fold_train_run_name / "weights" / "best.pt",
                     "fold_model": fold_model,
                 }
             )
@@ -504,6 +685,8 @@ def main() -> None:
             inject_wavelet=args.inject_wavelet,
             std_multi_norm=args.std_multi_norm,
             hard_negative_mining=args.hard_negative_mining,
+            y_component_multiplier=args.y_component_multiplier,
+            apply_letterboxing=args.apply_letterboxing,
             image_size=args.image_size,
             slicing=args.slicing,
             slice_height=args.slice_height,
@@ -511,23 +694,23 @@ def main() -> None:
             slice_width_overlap=args.slice_width_overlap,
             slice_height_overlap=args.slice_height_overlap,
             prep_workers=args.prep_workers,
+            debug_transform=args.debug_transform,
         )
 
         model = _make_model()
-        kwargs, _ = _base_train_kwargs(args, yaml_path, base_run_name)
-        model.train(**kwargs)
+        model, train_run_name = _train_with_optional_backbone_freeze(model, args, yaml_path, base_run_name)
 
         print("\n" + "=" * 55)
         print("[yolo] Validation metrics")
         print("=" * 55)
-        metrics = model.val(data=str(yaml_path), split="val", plots=False)
+        metrics = model.val(data=str(yaml_path), split="val", plots=False, imgsz=_resolve_imgsz(args))
         print(
             f"[yolo] map50-95={metrics.box.map:.4f}  "
             f"map50={metrics.box.map50:.4f}  "
             f"map75={metrics.box.map75:.4f}"
         )
 
-        best_ckpt = yolo_runs_dir / base_run_name / "weights" / "best.pt"
+        best_ckpt = yolo_runs_dir / train_run_name / "weights" / "best.pt"
         if best_ckpt.exists():
             dest = models_dir / f"yolo_best_{model_tag}.pt"
             shutil.copy2(best_ckpt, dest)
@@ -538,7 +721,7 @@ def main() -> None:
     print("\n" + "=" * 55)
     print("[yolo] Holdout metrics (original images, unseen during training)")
     print("=" * 55)
-    holdout_metrics = final_model.val(data=str(holdout_yaml), split="val", plots=False)
+    holdout_metrics = final_model.val(data=str(holdout_yaml), split="val", plots=False, imgsz=_resolve_imgsz(args))
     print(
         f"[yolo] holdout map50-95={holdout_metrics.box.map:.4f}  "
         f"map50={holdout_metrics.box.map50:.4f}  "

@@ -17,10 +17,12 @@ from .preprocessing import (
     _load_image_raw,
     _reorder_channels_by_rfi_contrast,
     _resize_image_to_shape,
-    _resize_image_to_square,
     _save_image_raw,
 )
 from .utils import _progress_iter
+
+
+_TRANSFORM_DEBUG_EMITTED = False
 
 
 def _compute_horizontal_slices(
@@ -90,12 +92,22 @@ def _process_and_save_image(
     inject_wavelet: bool,
     std_multi_norm: bool,
     image_size: Optional[int],
+    y_component_multiplier: float,
+    apply_letterboxing: bool,
+    debug_transform: bool,
 ) -> bool:
     """Carga, transforma y guarda una imagen individual."""
     img = _load_image_raw(src)
     if img is None or img.size == 0:
         shutil.copy2(src, dst)
         return True
+
+    debug_enabled = bool(debug_transform)
+    original_shape = tuple(int(v) for v in img.shape)
+    stretched_h = None
+    target_w = None
+    target_h = None
+    final_shape = None
 
     if std_multi_norm:
         img = _apply_std_multi_norm(img)
@@ -106,7 +118,31 @@ def _process_and_save_image(
     if inject_wavelet:
         img = _inject_horizontal_wavelet(img)
     if image_size is not None:
-        img = _resize_image_to_square(img, int(image_size))
+        src_h, src_w = int(img.shape[0]), int(img.shape[1])
+        stretched_h = max(1, int(round(src_h * float(y_component_multiplier))))
+        scale = float(image_size) / max(src_w, stretched_h)
+        target_w = max(1, int(round(src_w * scale)))
+        target_h = max(1, int(round(stretched_h * scale)))
+        img = _resize_image_to_shape(img, target_w, target_h)
+        if not apply_letterboxing:
+            img = _resize_image_to_shape(img, image_size, image_size)
+        final_shape = tuple(int(v) for v in img.shape)
+
+    global _TRANSFORM_DEBUG_EMITTED
+    if debug_enabled and not _TRANSFORM_DEBUG_EMITTED:
+        _TRANSFORM_DEBUG_EMITTED = True
+        print(f"[yolo][debug] imagen: {src.name}")
+        print(f"[yolo][debug] original shape: {original_shape}")
+        if image_size is not None and stretched_h is not None and target_w is not None and target_h is not None:
+            print(f"[yolo][debug] y_component_multiplier={float(y_component_multiplier):.4f} -> stretched_h={stretched_h}")
+            print(f"[yolo][debug] resize intermedio: {target_w}x{target_h}")
+            if apply_letterboxing:
+                print(f"[yolo][debug] apply_letterboxing=True -> se conserva {final_shape}")
+                print("[yolo][debug] YOLO aplicara letterbox internamente al entrenar")
+            else:
+                print(f"[yolo][debug] apply_letterboxing=False -> final square {final_shape}")
+        else:
+            print("[yolo][debug] image_size=None -> sin resize final")
 
     if _save_image_raw(dst, img):
         return True
@@ -126,6 +162,9 @@ def _link_image_worker(task: tuple) -> int:
         inject_wavelet,
         std_multi_norm,
         image_size,
+        y_component_multiplier,
+        apply_letterboxing,
+        debug_transform,
         slicing,
         slice_height,
         slice_height_overlap,
@@ -170,7 +209,31 @@ def _link_image_worker(task: tuple) -> int:
                 if inject_wavelet:
                     out_img = _inject_horizontal_wavelet(out_img)
                 if image_size is not None:
-                    out_img = _resize_image_to_square(out_img, int(image_size))
+                    sl_h, sl_w = int(out_img.shape[0]), int(out_img.shape[1])
+                    if apply_letterboxing:
+                        scale = float(image_size) / max(sl_h, sl_w)
+                        new_w = max(1, int(round(sl_w * scale)))
+                        new_h = max(1, int(round(sl_h * scale)))
+                        out_img = _resize_image_to_shape(out_img, new_w, new_h)
+                    else:
+                        out_img = _resize_image_to_shape(out_img, image_size, image_size)
+
+                global _TRANSFORM_DEBUG_EMITTED
+                if debug_transform and not _TRANSFORM_DEBUG_EMITTED:
+                    _TRANSFORM_DEBUG_EMITTED = True
+                    print(f"[yolo][debug] imagen: {src.name}")
+                    print(f"[yolo][debug] original shape: {(img_h, img_w)}")
+                    print(f"[yolo][debug] slice seleccionada: y=({y0}, {y1}) x=({x0}, {x1})")
+                    print(f"[yolo][debug] slice tras resize base: {img_w}x{img_h}")
+                    if image_size is not None:
+                        print(f"[yolo][debug] final slice shape: {tuple(int(v) for v in out_img.shape)}")
+                        if apply_letterboxing:
+                            print("[yolo][debug] apply_letterboxing=True -> se conserva el aspecto del slice")
+                            print("[yolo][debug] YOLO aplicara letterbox internamente al entrenar")
+                        else:
+                            print("[yolo][debug] apply_letterboxing=False -> slice final cuadrado")
+                    else:
+                        print("[yolo][debug] image_size=None -> sin resize final")
 
                 if has_vertical:
                     slice_name = f"{stem}_sl{row_idx:03d}_sw{col_idx:03d}{suffix}"
@@ -194,6 +257,9 @@ def _link_image_worker(task: tuple) -> int:
         inject_wavelet=inject_wavelet,
         std_multi_norm=std_multi_norm,
         image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
+        debug_transform=debug_transform,
     )
     return 1
 
@@ -209,6 +275,8 @@ def _link_images(
     inject_wavelet: bool = False,
     std_multi_norm: bool = False,
     image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
@@ -216,6 +284,7 @@ def _link_images(
     slice_width_overlap: float = 0.0,
     progress_desc: str = "images",
     prep_workers: int = 8,
+    debug_transform: bool = False,
 ) -> None:
     """
     Copia o enlaza imagenes al directorio de destino del dataset YOLO.
@@ -244,6 +313,8 @@ def _link_images(
     )
 
     prep_workers = max(1, int(prep_workers))
+    if debug_transform:
+        prep_workers = 1
 
     valid_items: List[tuple[str, Path, Path]] = []
     for img_id in ids:
@@ -269,6 +340,9 @@ def _link_images(
                 inject_wavelet,
                 std_multi_norm,
                 image_size,
+                y_component_multiplier,
+                apply_letterboxing,
+                debug_transform,
                 slicing,
                 slice_height,
                 slice_height_overlap,
@@ -299,6 +373,9 @@ def _link_images(
                         inject_wavelet,
                         std_multi_norm,
                         image_size,
+                        y_component_multiplier,
+                        apply_letterboxing,
+                        debug_transform,
                         slicing,
                         slice_height,
                         slice_height_overlap,
@@ -315,6 +392,9 @@ def _link_images(
                     inject_wavelet=inject_wavelet,
                     std_multi_norm=std_multi_norm,
                     image_size=image_size,
+                    y_component_multiplier=y_component_multiplier,
+                    apply_letterboxing=apply_letterboxing,
+                    debug_transform=debug_transform,
                 )
         else:
             try:
@@ -567,12 +647,15 @@ def _materialize_dataset(
     hard_negative_mining: bool = False,
     seed: int = 42,
     image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
     slice_width: Optional[int] = None,
     slice_width_overlap: float = 0.0,
     prep_workers: int = 8,
+    debug_transform: bool = False,
 ) -> Path:
     images_train = dataset_root / "images" / "train"
     images_val = dataset_root / "images" / "val"
@@ -597,6 +680,8 @@ def _materialize_dataset(
         inject_wavelet=inject_wavelet,
         std_multi_norm=std_multi_norm,
         image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -604,6 +689,7 @@ def _materialize_dataset(
         slice_width_overlap=slice_width_overlap,
         progress_desc="train images",
         prep_workers=prep_workers,
+        debug_transform=debug_transform,
     )
     _link_images(
         val_ids,
@@ -615,6 +701,8 @@ def _materialize_dataset(
         inject_wavelet=inject_wavelet,
         std_multi_norm=std_multi_norm,
         image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -622,6 +710,7 @@ def _materialize_dataset(
         slice_width_overlap=slice_width_overlap,
         progress_desc="val images",
         prep_workers=prep_workers,
+        debug_transform=debug_transform,
     )
 
     _convert_coco_to_yolo(
@@ -640,6 +729,8 @@ def _materialize_dataset(
         copy_paste_n=train_copy_paste_n,
         merge_contiguous_boxes=train_merge_contiguous_boxes,
         resized_image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -665,6 +756,8 @@ def _materialize_dataset(
         labels_val,
         val_ids,
         resized_image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -696,12 +789,15 @@ def _build_holdout_dataset(
     inject_wavelet: bool = False,
     std_multi_norm: bool = False,
     image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
     slice_width: Optional[int] = None,
     slice_width_overlap: float = 0.0,
     prep_workers: int = 8,
+    debug_transform: bool = False,
 ) -> tuple[Path, set[int]]:
     """Reserve a holdout split from training data. Never used during training."""
     holdout_root = project_root / "data" / "yolo" / "holdout"
@@ -728,6 +824,8 @@ def _build_holdout_dataset(
         inject_wavelet=inject_wavelet,
         std_multi_norm=std_multi_norm,
         image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -735,6 +833,7 @@ def _build_holdout_dataset(
         slice_width_overlap=slice_width_overlap,
         progress_desc="holdout images",
         prep_workers=prep_workers,
+        debug_transform=debug_transform,
     )
     _convert_coco_to_yolo(
         coco,
@@ -742,6 +841,8 @@ def _build_holdout_dataset(
         holdout_labels,
         holdout_ids_list,
         resized_image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
@@ -788,12 +889,15 @@ def _build_single_dataset(
     std_multi_norm: bool = False,
     hard_negative_mining: bool = False,
     image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
     slice_width: Optional[int] = None,
     slice_width_overlap: float = 0.0,
     prep_workers: int = 8,
+    debug_transform: bool = False,
 ) -> Path:
     coco, images_meta = _load_coco(annotation_path)
     candidate_ids = _select_candidate_image_ids(coco, images_meta, excluded_ids)
@@ -820,12 +924,15 @@ def _build_single_dataset(
         hard_negative_mining=hard_negative_mining,
         seed=seed,
         image_size=image_size,
+        y_component_multiplier=y_component_multiplier,
+        apply_letterboxing=apply_letterboxing,
         slicing=slicing,
         slice_height=slice_height,
         slice_height_overlap=slice_height_overlap,
         slice_width=slice_width,
         slice_width_overlap=slice_width_overlap,
         prep_workers=prep_workers,
+        debug_transform=debug_transform,
     )
 
 
@@ -851,12 +958,15 @@ def _build_kfold_datasets(
     std_multi_norm: bool = False,
     hard_negative_mining: bool = False,
     image_size: Optional[int] = None,
+    y_component_multiplier: float = 1.0,
+    apply_letterboxing: bool = False,
     slicing: bool = False,
     slice_height: int = 256,
     slice_height_overlap: float = 0.2,
     slice_width: Optional[int] = None,
     slice_width_overlap: float = 0.0,
     prep_workers: int = 8,
+    debug_transform: bool = False,
 ) -> List[tuple[int, Path]]:
     coco, images_meta = _load_coco(annotation_path)
     candidate_ids = _select_candidate_image_ids(coco, images_meta, excluded_ids)
@@ -890,12 +1000,15 @@ def _build_kfold_datasets(
             hard_negative_mining=hard_negative_mining,
             seed=seed + fold_idx,
             image_size=image_size,
+            y_component_multiplier=y_component_multiplier,
+            apply_letterboxing=apply_letterboxing,
             slicing=slicing,
             slice_height=slice_height,
             slice_height_overlap=slice_height_overlap,
             slice_width=slice_width,
             slice_width_overlap=slice_width_overlap,
             prep_workers=prep_workers,
+            debug_transform=debug_transform,
         )
         fold_specs.append((fold_idx, yaml_path))
 

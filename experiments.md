@@ -821,16 +821,13 @@ baseline + con slicing y estiramiento
 
 & C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.inference --checkpoint models/yolo_best_yolo26n.pt --mode both --image-size 512 --slicing true --slice-height 64 --slice-overlap 0.25 --batch-size 32 --postprocess-workers 8
 
-
-probar 1024, 128 slice,0.25
-
 ## resultado mAP val
 
-
+0.368
 
 ## resultado mAP test teórico
 
-
+0.403
 
 ## resultado mAP leaderboard
 
@@ -844,19 +841,19 @@ probar 1024, 128 slice,0.25
 
 # run32
 
-
+run33 pero con yolo26s
 
 ## comando
 
-
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26s --epochs 50 --batch-size 8 --image-size 736 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1
 
 ## resultado mAP val
 
-
+0.392
 
 ## resultado mAP test teórico
 
-
+0.411
 
 ## resultado mAP leaderboard
 
@@ -898,19 +895,19 @@ baseline con resize y estiramiento. image size 736
 
 # run33
 
-run32 pero con yolo26s
+baseline con y*2 y con 768 sin letterboxing
 
 ## comando
 
-& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26s --epochs 50 --batch-size 8 --image-size 736 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26n --epochs 50 --batch-size 8 --image-size 768 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1 --apply-letterboxing false --y-component-multiplier 2.0
 
 ## resultado mAP val
 
-
+0.371
 
 ## resultado mAP test teórico
 
-
+0.396
 
 ## resultado mAP leaderboard
 
@@ -924,19 +921,19 @@ run32 pero con yolo26s
 
 # run34
 
-
+baseline con y*2 y con 768 con letterboxing
 
 ## comando
 
-
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26n --epochs 50 --batch-size 8 --image-size 768 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1 --apply-letterboxing true --y-component-multiplier 2.0
 
 ## resultado mAP val
 
-
+0.377
 
 ## resultado mAP test teórico
 
-
+0.388
 
 ## resultado mAP leaderboard
 
@@ -948,21 +945,22 @@ run32 pero con yolo26s
 -----------------
 
 
+
 # run35
 
-
+run 33 pero con yolo26s
 
 ## comando
 
-
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26n --epochs 50 --batch-size 8 --image-size 768 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1 --apply-letterboxing false --y-component-multiplier 2.0
 
 ## resultado mAP val
 
-
+0.387
 
 ## resultado mAP test teórico
 
-
+0.416
 
 ## resultado mAP leaderboard
 
@@ -976,6 +974,107 @@ run32 pero con yolo26s
 
 # run36
 
+sin component y multiplier
+
+## comando
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26n --epochs 50 --batch-size 8 --image-size 768 --num-workers 8 --lr 0.001 --lrf 0.01 --kfold 1 --apply-letterboxing false --y-component-multiplier 1.0
+
+## resultado mAP val
+
+0.363
+
+## resultado mAP test teórico
+
+0.39
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+-------------------
+
+# run37
+
+intento de mejora de run36 pero usando copy paste mas definido, mas epocas, mayor dfl
+
+pasarle a claude la salida de consola a ver que le parece si se podria usar 150 epocas o algo o cambiar el lr?
+
+## comando
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26s --epochs 100 --image-size 768 --batch-size 8 --num-workers 8 --small-box-copy-paste True --copy-paste-p 0.5 --copy-paste-max-h 10 --box 10.0 --cls 0.3 --dfl 2.5  --kfold 1 --lr 0.001 --lrf 0.01 --apply-letterboxing false --y-component-multiplier 2.0
+
+## resultado mAP val
+
+0.408
+
+## resultado mAP test teórico
+
+0.427
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+
+-------------------
+
+# run38
+
+run37 pero con hard negative mining y label smoothing
+
+## comando
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo26s --epochs 100 --image-size 768 --batch-size 8 --num-workers 8 --small-box-copy-paste True --copy-paste-p 0.5 --copy-paste-max-h 10 --box 10.0 --cls 0.3 --dfl 2.5  --kfold 1 --lr 0.001 --lrf 0.01 --apply-letterboxing false --y-component-multiplier 2.0 --hard-negative-mining true --label-smoothing 0.0
+
+## resultado mAP val
+
+0.395
+
+## resultado mAP test teórico
+
+0.427
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+-------------------
+
+# run39
+
+run38 pero con --mosaic 0.8 y --cls 0.2 --remove-small 3 y image size 1280
+
+## comando
+
+/usr/bin/python -m src.train --model yolo26s --epochs 100 --image-size 1280 --batch-size 8 --num-workers 8 --small-box-copy-paste True --copy-paste-p 0.5 --copy-paste-max-h 10 --box 10.0 --cls 0.2 --dfl 2.5  --kfold 1 --lr 0.001 --lrf 0.01 --apply-letterboxing false --y-component-multiplier 2.0 --hard-negative-mining true --label-smoothing 0.0 --mosaic 0.8 --remove-small 3
+
+## resultado mAP val
+
+
+
+## resultado mAP test teórico
+
+
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+
+
+-------------------
+
+# run40
+
 
 
 ## comando
@@ -995,3 +1094,69 @@ run32 pero con yolo26s
 
 
 ## explicacion resultado
+
+-------------------
+
+# run41
+
+
+
+## comando
+
+
+
+## resultado mAP val
+
+
+
+## resultado mAP test teórico
+
+
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+-------------------
+
+# run42
+
+
+
+## comando
+
+
+
+## resultado mAP val
+
+
+
+## resultado mAP test teórico
+
+
+
+## resultado mAP leaderboard
+
+
+
+## explicacion resultado
+
+
+-----------------
+
+probar 1280
+
+probar modelos mas grandes ademas del s
+
+probar otros modelos como yolo11 o yolov9
+
+probar --multi-scale true
+
+
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.train --model yolo11s --epochs 120 --image-size 736 --batch-size 8 --num-workers 8 --lr 0.002 --lrf 0.01 --apply-letterboxing false --y-component-multiplier 2.0 --kfold 1 --scale 0.02 --translate 0.01 --mosaic 1.0 --close-mosaic 20 --box 7.5 --cls 0.5 --dfl 1.5 --label-smoothing 0.0 --small-box-copy-paste true --copy-paste-p 0.3 --copy-paste-max-h 12.0 --copy-paste-n 3 --hard-negative-mining false 
+
+
+& C:\Users\esteb\.conda\envs\clearsar\python.exe -m src.detr_simple_train --epochs 30 --batch-size 1 --image-size 512 --lr 1e-4 --num-workers 2 --val-fraction 0.1
